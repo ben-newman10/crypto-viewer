@@ -1,7 +1,6 @@
 import os
 from typing import List, Dict, Any
-import openai
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 class AIService:
     def __init__(self):
@@ -9,7 +8,7 @@ class AIService:
         if not api_key or api_key == "your_openai_api_key":
             print("Warning: Missing or invalid OPENAI_API_KEY")
         else:
-            self.client = OpenAI(api_key=api_key)
+            self.client = AsyncOpenAI(api_key=api_key)
 
     async def get_recommendations(self, portfolio: List[Dict[str, Any]], market_data: List[Dict[str, Any]]) -> str:
         if not hasattr(self, 'client'):

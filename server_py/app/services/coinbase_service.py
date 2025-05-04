@@ -2,13 +2,11 @@ from datetime import datetime, timedelta
 import os
 from typing import List, Dict, Any
 import json
-from jose import jwt
-from coinbase.rest import RESTClient
 from dotenv import load_dotenv
+from coinbase.rest import RESTClient
 
 class CoinbaseService:
     def __init__(self):
-        # Ensure environment variables are loaded
         load_dotenv()
         
         api_key = os.getenv("COINBASE_API_KEY")
@@ -40,37 +38,32 @@ class CoinbaseService:
     async def get_portfolio(self) -> List[Dict[str, Any]]:
         try:
             response = self.client.get_accounts()
-            response_dict = self._to_dict(response)
-            print("Raw API Response:", json.dumps(response_dict, indent=2))  # Debug log
-            
-            # Handle different response formats
-            if isinstance(response_dict, dict):
-                if "data" in response_dict:
-                    accounts = response_dict["data"]
-                else:
-                    accounts = [response_dict]
-            elif isinstance(response_dict, list):
-                accounts = response_dict
+            if isinstance(response, str):
+                response_data = json.loads(response)
             else:
-                raise ValueError(f"Unexpected response type: {type(response_dict)}")
-
-            # More robust balance checking
+                response_data = response
+            
             portfolio = []
-            for account in accounts:
-                try:
-                    balance = account.get("balance", {})
-                    value = float(balance.get("amount", 0))
-                    
-                    if value > 0:
-                        portfolio.append({
-                            "currency": account.get("currency", ""),
-                            "balance": value,
-                            "available": value
-                        })
-                except (ValueError, TypeError) as e:
-                    print(f"Error processing account {account.get('currency', 'unknown')}: {e}")
-                    continue
-
+            if isinstance(response_data, dict):
+                accounts = response_data.get("accounts", [])
+                for account in accounts:
+                    if isinstance(account, dict):
+                        # Extract account information
+                        account_type = account.get("type", "")
+                        available_balance = account.get("available_balance", {})
+                        
+                        if isinstance(available_balance, dict):
+                            currency = available_balance.get("currency", "")
+                            value = available_balance.get("value", "0")
+                            
+                            # Include account if it's a crypto account or has a non-zero balance
+                            if (account_type == "ACCOUNT_TYPE_CRYPTO" and account.get("ready", False)) or float(value) > 0:
+                                portfolio.append({
+                                    "currency": currency,
+                                    "balance": value,
+                                    "available": value
+                                })
+            
             return portfolio
 
         except Exception as e:
@@ -81,11 +74,21 @@ class CoinbaseService:
 
     async def get_crypto_price(self, product_id: str) -> Dict[str, Any]:
         try:
-            response = self.client.get_product_ticker(product_id=product_id)
-            return {
-                "price": response.get("price"),
-                "time": response.get("time")
-            }
+            # Get current market data
+            market_data = self.client.get_market_trades(
+                product_id=product_id,
+                limit=1
+            )
+            
+            if market_data and len(market_data) > 0:
+                latest_trade = market_data[0]
+                return {
+                    "price": str(latest_trade["price"]),
+                    "time": datetime.utcnow().isoformat()
+                }
+            else:
+                raise ValueError(f"No price data available for {product_id}")
+                
         except Exception as e:
             print(f"Error fetching price for {product_id}: {e}")
             raise
@@ -95,7 +98,7 @@ class CoinbaseService:
             end_time = datetime.utcnow()
             start_time = end_time - timedelta(days=1)
             
-            response = self.client.get_product_candles(
+            candles = self.client.get_market_candles(
                 product_id=product_id,
                 start=start_time.isoformat(),
                 end=end_time.isoformat(),
@@ -104,15 +107,16 @@ class CoinbaseService:
             
             return [
                 {
-                    "time": candle["start"],
-                    "open": candle["open"],
-                    "high": candle["high"],
-                    "low": candle["low"],
-                    "close": candle["close"],
-                    "volume": candle["volume"]
+                    "time": datetime.fromtimestamp(candle["start"]).isoformat(),
+                    "open": str(candle["open"]),
+                    "high": str(candle["high"]),
+                    "low": str(candle["low"]),
+                    "close": str(candle["close"]),
+                    "volume": str(candle["volume"])
                 }
-                for candle in response.get("candles", [])
+                for candle in candles
             ]
+            
         except Exception as e:
             print(f"Error fetching historical data for {product_id}: {e}")
             raise
