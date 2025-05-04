@@ -43,7 +43,7 @@ const Portfolio = () => {
     enabled: !!portfolio,
     queryFn: async () => {
       const pricePromises = portfolio!.map(async (holding) => {
-        const response = await fetch(`/api/crypto/price/${holding.currency}-USD`)
+        const response = await fetch(`/api/crypto/price/${holding.currency}-GBP`)
         return response.json()
       })
       return Promise.all(pricePromises)
@@ -67,7 +67,7 @@ const Portfolio = () => {
                 <StatNumber>{Number(holding.balance).toFixed(4)}</StatNumber>
                 {prices?.[index] && (
                   <Text color="gray.600">
-                    ${(Number(holding.balance) * Number(prices[index].price)).toFixed(2)} USD
+                    £{(Number(holding.balance) * Number(prices[index].price)).toFixed(2)} GBP
                     <StatArrow type={Number(prices[index].price) > 0 ? 'increase' : 'decrease'} />
                   </Text>
                 )}

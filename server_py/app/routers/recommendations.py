@@ -15,7 +15,7 @@ async def get_recommendations() -> Dict[str, str]:
         # Get market data for each cryptocurrency in the portfolio
         market_data = []
         for holding in portfolio:
-            product_id = f"{holding['currency']}-USD"
+            product_id = f"{holding['currency']}-GBP"
             data = await coinbase_service.get_historical_data(product_id)
             market_data.append({"currency": holding["currency"], "data": data})
 
@@ -33,7 +33,7 @@ async def get_analysis() -> Dict[str, Any]:
         # Get market data for each asset in portfolio
         market_data = []
         for account in portfolio:
-            product_id = account.get("currency", "").upper() + "-USD"
+            product_id = account.get("currency", "").upper() + "-GBP"
             try:
                 price_data = await coinbase_service.get_crypto_price(product_id)
                 historical_data = await coinbase_service.get_historical_data(product_id)

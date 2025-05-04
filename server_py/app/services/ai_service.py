@@ -5,12 +5,16 @@ from openai import AsyncOpenAI
 class AIService:
     def __init__(self):
         api_key = os.getenv("OPENAI_API_KEY")
+        self.enable_ai_recommendations = os.getenv("ENABLE_AI_RECOMMENDATIONS", "true").lower() == "true"
         if not api_key or api_key == "your_openai_api_key":
             print("Warning: Missing or invalid OPENAI_API_KEY")
         else:
             self.client = AsyncOpenAI(api_key=api_key)
 
     async def get_recommendations(self, portfolio: List[Dict[str, Any]], market_data: List[Dict[str, Any]]) -> str:
+        if not self.enable_ai_recommendations:
+            return "AI recommendations are disabled. Please enable them in the .env file."
+
         if not hasattr(self, 'client'):
             return "AI recommendations are not available. Please configure your OPENAI_API_KEY in the .env file."
 
