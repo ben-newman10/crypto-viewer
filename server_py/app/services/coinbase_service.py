@@ -37,35 +37,43 @@ class CoinbaseService:
 
     async def get_portfolio(self) -> List[Dict[str, Any]]:
         try:
+            print("Fetching portfolio data...")
             response = self.client.get_accounts()
-            if isinstance(response, str):
-                response_data = json.loads(response)
-            else:
-                response_data = response
+            print(f"Raw response type: {type(response)}")
             
             portfolio = []
-            if isinstance(response_data, dict):
-                accounts = response_data.get("accounts", [])
-                for account in accounts:
-                    if isinstance(account, dict):
-                        # Extract account information
-                        account_type = account.get("type", "")
-                        available_balance = account.get("available_balance", {})
-                        
-                        if isinstance(available_balance, dict):
-                            currency = available_balance.get("currency", "")
-                            value = available_balance.get("value", "0")
-                            
-                            # Include account if it's a crypto account or has a non-zero balance
-                            if (account_type == "ACCOUNT_TYPE_CRYPTO" and account.get("ready", False)) or float(value) > 0:
-                                portfolio.append({
-                                    "currency": currency,
-                                    "balance": value,
-                                    "available": value
-                                })
+            response_dict = self._to_dict(response)
+            accounts = response_dict.get('accounts', [])
+            print(f"Found {len(accounts)} accounts")
             
+            for account in accounts:
+                account_type = account.get('type', '')
+                available_balance = account.get('available_balance', {})
+                ready = account.get('ready', False)
+                
+                print(f"Processing {account.get('name')} - Type: {account_type}, Ready: {ready}")
+                
+                if isinstance(available_balance, dict):
+                    currency = available_balance.get('currency', '')
+                    value = available_balance.get('value', '0')
+                    
+                    print(f"Balance for {currency}: {value}")
+                    
+                    # Only include if:
+                    # 1. For crypto: account is ready AND has non-zero balance
+                    # 2. For fiat: has non-zero balance
+                    if (account_type == 'ACCOUNT_TYPE_CRYPTO' and ready and float(value) > 0) or \
+                       (account_type == 'ACCOUNT_TYPE_FIAT' and float(value) > 0):
+                        portfolio.append({
+                            "currency": currency,
+                            "balance": value,
+                            "available": value
+                        })
+                        print(f"Added {currency} to portfolio")
+            
+            print(f"Final portfolio: {portfolio}")
             return portfolio
-
+            
         except Exception as e:
             print(f"Error fetching portfolio: {str(e)}")
             print(f"Error type: {type(e).__name__}")
