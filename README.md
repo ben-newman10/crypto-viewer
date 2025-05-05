@@ -2,6 +2,8 @@
 
 Crypto Viewer is a web application built with React, TypeScript, and Vite for tracking cryptocurrency portfolios and prices. It includes a Python FastAPI backend that interfaces with the Coinbase Advanced Trade API for real-time data and OpenAI for crypto analysis.
 
+![Crypto Dashboard Viewer](dashboard.png)
+
 ## Features
 
 - View your cryptocurrency portfolio with real-time updates.
