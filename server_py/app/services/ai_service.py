@@ -81,7 +81,7 @@ Please analyze the current market conditions, trends, and portfolio composition 
 Provide concise, actionable insights."""
 
             response = await self.client.chat.completions.create(
-                model="gpt-4",
+                model="gpt-4.1",
                 messages=[
                     {
                         "role": "system",
