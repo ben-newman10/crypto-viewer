@@ -3,30 +3,8 @@
  * Features real-time price updates and responsive grid layout.
  */
 
-import { Box, Card, CardBody, Heading, Stack, Text, Stat, StatLabel, StatNumber, StatArrow, Grid } from '@chakra-ui/react'
+import { Box, Card, CardBody, Heading, Stack, Text, Stat, StatLabel, StatNumber, StatArrow, StatHelpText, Grid } from '@chakra-ui/react'
 import { useQuery } from '@tanstack/react-query'
-import { Line } from 'react-chartjs-2'
-import {
-  Chart as ChartJS,
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend
-} from 'chart.js'
-
-// Register required Chart.js components for price history visualization
-ChartJS.register(
-  CategoryScale,
-  LinearScale,
-  PointElement,
-  LineElement,
-  Title,
-  Tooltip,
-  Legend
-)
 
 /**
  * Interface defining the structure of cryptocurrency holding data
@@ -36,6 +14,13 @@ interface CryptoHolding {
   currency: string    // The cryptocurrency symbol (e.g., 'BTC', 'ETH')
   balance: string     // The total balance of the holding
   available: string   // The available balance that can be traded
+}
+
+interface CryptoPrice {
+  price: string       // Current price
+  time: string       // Timestamp
+  change_24h: number // 24-hour price change percentage
+  price_24h_ago: string // Price 24 hours ago
 }
 
 const Portfolio = () => {
@@ -50,7 +35,7 @@ const Portfolio = () => {
   })
 
   // Fetch real-time prices for each cryptocurrency in the portfolio
-  const { data: prices } = useQuery({
+  const { data: prices } = useQuery<CryptoPrice[]>({
     queryKey: ['prices', portfolio],
     enabled: !!portfolio, // Only fetch prices when portfolio data exists
     queryFn: async () => {
@@ -80,12 +65,22 @@ const Portfolio = () => {
                 <StatLabel>{holding.currency}</StatLabel>
                 {prices?.[index] && (
                   <>
-                    {/* Display GBP value as the main number */}
-                    <StatNumber>£{(Number(holding.balance) * Number(prices[index].price)).toFixed(2)}</StatNumber>
-                    {/* Display coin balance as secondary info */}
-                    <Text color="gray.600">
-                      {Number(holding.balance).toFixed(4)} {holding.currency}
-                      <StatArrow type={Number(prices[index].price) > 0 ? 'increase' : 'decrease'} />
+                    {/* Total value in GBP */}
+                    <StatNumber>
+                      £{(Number(holding.balance) * Number(prices[index].price)).toFixed(2)}
+                    </StatNumber>
+                    {/* Current price per coin */}
+                    <Text color="gray.600" fontSize="sm">
+                      Current Price: £{Number(prices[index].price).toFixed(2)}
+                    </Text>
+                    {/* 24h change with arrow */}
+                    <StatHelpText>
+                      <StatArrow type={prices[index].change_24h >= 0 ? 'increase' : 'decrease'} />
+                      {Math.abs(prices[index].change_24h).toFixed(2)}%
+                    </StatHelpText>
+                    {/* Balance */}
+                    <Text fontSize="sm" mt={1}>
+                      Balance: {Number(holding.balance).toFixed(4)} {holding.currency}
                     </Text>
                   </>
                 )}

@@ -146,7 +146,7 @@ class CoinbaseService:
 
     async def get_crypto_price(self, product_id: str) -> Dict[str, Any]:
         """
-        Fetch the current price for a cryptocurrency.
+        Fetch the current price and 24-hour change for a cryptocurrency.
         
         Args:
             product_id: The trading pair identifier (e.g., 'BTC-GBP')
@@ -155,48 +155,47 @@ class CoinbaseService:
             Dictionary containing price information:
             {
                 "price": str,           # Current price
-                "time": str             # Timestamp of the price
+                "time": str,            # Timestamp of the price
+                "change_24h": float,    # 24-hour price change percentage
+                "price_24h_ago": str    # Price 24 hours ago
             }
-            
-        Raises:
-            ValueError: If the trading pair is not supported
         """
         try:
-            # Use the product ID as-is since it's already formatted
+            # Get current price
             logging.info(f"Fetching price for {product_id}...")
-
-            # Validate if the product ID exists
-            url = f"https://api.exchange.coinbase.com/products/{product_id}"
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url)
-                logging.debug(f"Response: {response.status_code}, Content: {response.text}")
-
-                if response.status_code == 404:
-                    raise ValueError(f"Trading pair {product_id} is not supported.")
-
+            
+            # Get 24h historical data
+            historical_data = await self.get_historical_data(product_id)
+            if not historical_data:
+                raise ValueError("No historical data available")
+                
             # Get current market data
             market_data = self.client.get_market_trades(
                 product_id=product_id,
                 limit=1
             )
 
-            logging.debug(f"Raw market data: {market_data}")
-
-            # Convert market_data to a dictionary and validate structure
+            # Convert market_data to a dictionary and validate
             market_data_dict = self._to_dict(market_data)
             trades = market_data_dict.get('trades', [])
             if not isinstance(trades, list) or len(trades) == 0:
-                raise ValueError(f"No trades found in market data: {market_data_dict}")
+                raise ValueError(f"No trades found in market data")
 
-            # Extract the latest trade
+            # Get current price from latest trade
             latest_trade = trades[0]
-            if not isinstance(latest_trade, dict) or 'price' not in latest_trade:
-                raise ValueError(f"Invalid trade data: {latest_trade}")
+            current_price = float(latest_trade["price"])
+            
+            # Get price from 24h ago
+            price_24h_ago = float(historical_data[-1]["close"])
+            
+            # Calculate percentage change
+            change_24h = ((current_price - price_24h_ago) / price_24h_ago) * 100
 
-            # Return the price and time
             return {
-                "price": str(latest_trade["price"]),
-                "time": latest_trade.get("time", datetime.utcnow().isoformat())
+                "price": str(current_price),
+                "time": latest_trade.get("time", datetime.utcnow().isoformat()),
+                "change_24h": round(change_24h, 2),
+                "price_24h_ago": str(price_24h_ago)
             }
 
         except ValueError as ve:
