@@ -1,3 +1,8 @@
+/**
+ * Portfolio component displays the user's cryptocurrency holdings and their current values.
+ * Features real-time price updates and responsive grid layout.
+ */
+
 import { Box, Card, CardBody, Heading, Stack, Text, Stat, StatLabel, StatNumber, StatArrow, Grid } from '@chakra-ui/react'
 import { useQuery } from '@tanstack/react-query'
 import { Line } from 'react-chartjs-2'
@@ -12,6 +17,7 @@ import {
   Legend
 } from 'chart.js'
 
+// Register required Chart.js components for price history visualization
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -22,13 +28,18 @@ ChartJS.register(
   Legend
 )
 
+/**
+ * Interface defining the structure of cryptocurrency holding data
+ * received from the backend API
+ */
 interface CryptoHolding {
-  currency: string
-  balance: string
-  available: string
+  currency: string    // The cryptocurrency symbol (e.g., 'BTC', 'ETH')
+  balance: string     // The total balance of the holding
+  available: string   // The available balance that can be traded
 }
 
 const Portfolio = () => {
+  // Fetch portfolio data with automatic refresh every 30 seconds
   const { data: portfolio, isLoading } = useQuery<CryptoHolding[]>({
     queryKey: ['portfolio'],
     queryFn: async () => {
@@ -38,9 +49,10 @@ const Portfolio = () => {
     refetchInterval: 30000 // Refresh every 30 seconds
   })
 
+  // Fetch real-time prices for each cryptocurrency in the portfolio
   const { data: prices } = useQuery({
     queryKey: ['prices', portfolio],
-    enabled: !!portfolio,
+    enabled: !!portfolio, // Only fetch prices when portfolio data exists
     queryFn: async () => {
       const pricePromises = portfolio!.map(async (holding) => {
         const response = await fetch(`/api/crypto/price/${holding.currency}-GBP`)
@@ -51,6 +63,7 @@ const Portfolio = () => {
     refetchInterval: 10000 // Refresh prices every 10 seconds
   })
 
+  // Show loading state while fetching initial portfolio data
   if (isLoading) {
     return <Box>Loading portfolio...</Box>
   }
@@ -58,15 +71,18 @@ const Portfolio = () => {
   return (
     <Stack spacing={4}>
       <Heading size="lg">Your Crypto Portfolio</Heading>
+      {/* Responsive grid layout: 1 column on mobile, 2 on tablet, 3 on desktop */}
       <Grid templateColumns={{ base: '1fr', md: 'repeat(2, 1fr)', lg: 'repeat(3, 1fr)' }} gap={4}>
         {portfolio?.map((holding, index) => (
           <Card key={holding.currency}>
             <CardBody>
               <Stat>
                 <StatLabel>{holding.currency}</StatLabel>
+                {/* Display crypto balance with 4 decimal places */}
                 <StatNumber>{Number(holding.balance).toFixed(4)}</StatNumber>
                 {prices?.[index] && (
                   <Text color="gray.600">
+                    {/* Display GBP value with price trend indicator */}
                     £{(Number(holding.balance) * Number(prices[index].price)).toFixed(2)} GBP
                     <StatArrow type={Number(prices[index].price) > 0 ? 'increase' : 'decrease'} />
                   </Text>

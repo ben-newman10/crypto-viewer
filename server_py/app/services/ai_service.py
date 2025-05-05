@@ -1,24 +1,73 @@
+"""
+AI service module for generating cryptocurrency trading recommendations.
+Uses OpenAI's GPT models to analyze portfolio and market data.
+"""
+
+from typing import Dict, List, Any
 import os
-from typing import List, Dict, Any
+import logging
 from openai import AsyncOpenAI
+from dotenv import load_dotenv
 
 class AIService:
+    """
+    Service class for generating AI-powered cryptocurrency trading recommendations.
+    Utilizes OpenAI's GPT models to analyze portfolio composition and market trends.
+    """
+
+    _instance = None
+
+    def __new__(cls):
+        """Implement singleton pattern to ensure only one AI service instance exists."""
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
-        api_key = os.getenv("OPENAI_API_KEY")
+        """
+        Initialize the AI service with OpenAI API credentials.
+        Checks environment variables for API key and feature flag.
+        """
+        # Skip initialization if already done
+        if hasattr(self, 'initialized'):
+            return
+            
+        load_dotenv()
+        self.api_key = os.getenv("OPENAI_API_KEY")
         self.enable_ai_recommendations = os.getenv("ENABLE_AI_RECOMMENDATIONS", "true").lower() == "true"
-        if not api_key or api_key == "your_openai_api_key":
-            print("Warning: Missing or invalid OPENAI_API_KEY")
+        
+        if not self.api_key or self.api_key == "your_openai_api_key":
+            logging.warning("Missing or invalid OPENAI_API_KEY")
+            self.client = None
         else:
-            self.client = AsyncOpenAI(api_key=api_key)
+            try:
+                self.client = AsyncOpenAI(api_key=self.api_key)
+                logging.info("Successfully initialized OpenAI client")
+            except Exception as e:
+                logging.error(f"Failed to initialize OpenAI client: {e}")
+                self.client = None
+        
+        self.initialized = True
 
     async def get_recommendations(self, portfolio: List[Dict[str, Any]], market_data: List[Dict[str, Any]]) -> str:
+        """
+        Generate cryptocurrency trading recommendations based on portfolio and market data.
+        
+        Args:
+            portfolio: List of dictionaries containing current holdings
+            market_data: List of dictionaries containing price and historical data
+        
+        Returns:
+            String containing newline-separated recommendations
+        """
         if not self.enable_ai_recommendations:
             return "AI recommendations are disabled. Please enable them in the .env file."
 
-        if not hasattr(self, 'client'):
-            return "AI recommendations are not available. Please configure your OPENAI_API_KEY in the .env file."
+        if not self.client:
+            return "AI recommendations are not available. Please check your OPENAI_API_KEY configuration."
 
-        prompt = f"""As a cryptocurrency expert analyst, provide specific buy, sell, or hold recommendations based on the following portfolio and market data:
+        try:
+            prompt = f"""As a cryptocurrency expert analyst, provide specific buy, sell, or hold recommendations based on the following portfolio and market data:
 
 Portfolio: {portfolio}
 Recent Market Data: {market_data}
@@ -31,7 +80,6 @@ Please analyze the current market conditions, trends, and portfolio composition 
 
 Provide concise, actionable insights."""
 
-        try:
             response = await self.client.chat.completions.create(
                 model="gpt-4",
                 messages=[
@@ -49,5 +97,5 @@ Provide concise, actionable insights."""
             )
             return response.choices[0].message.content
         except Exception as e:
-            print(f"OpenAI API error: {e}")
+            logging.error(f"OpenAI API error: {e}")
             return "Unable to generate recommendations at this time. Please try again later."
