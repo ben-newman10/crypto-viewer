@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <!-- Background circle (coin) -->
+  <circle cx="100" cy="100" r="80" fill="#f0b90b"></circle>
+
+  <!-- Magnifying glass handle -->
+  <rect x="130" y="130" width="50" height="10" rx="5" ry="5" fill="#333" transform="rotate(45 130 130)"></rect>
+
+  <!-- Magnifying glass rim -->
+  <circle cx="100" cy="100" r="50" fill="none" stroke="#333" stroke-width="10"></circle>
+
+  <!-- Upward arrow (recommendation) -->
+  <polyline points="70,120 90,95 110,115 130,85" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"></polyline>
+  <polygon points="130,85 125,95 140,95" fill="#fff"></polygon>
+
+  <!-- Text “CR” initials -->
+  <text x="100" y="115" font-family="Arial, sans-serif" font-size="48" fill="#333" text-anchor="middle" font-weight="bold">CR</text>
+</svg>
