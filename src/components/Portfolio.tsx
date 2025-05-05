@@ -78,14 +78,16 @@ const Portfolio = () => {
             <CardBody>
               <Stat>
                 <StatLabel>{holding.currency}</StatLabel>
-                {/* Display crypto balance with 4 decimal places */}
-                <StatNumber>{Number(holding.balance).toFixed(4)}</StatNumber>
                 {prices?.[index] && (
-                  <Text color="gray.600">
-                    {/* Display GBP value with price trend indicator */}
-                    £{(Number(holding.balance) * Number(prices[index].price)).toFixed(2)} GBP
-                    <StatArrow type={Number(prices[index].price) > 0 ? 'increase' : 'decrease'} />
-                  </Text>
+                  <>
+                    {/* Display GBP value as the main number */}
+                    <StatNumber>£{(Number(holding.balance) * Number(prices[index].price)).toFixed(2)}</StatNumber>
+                    {/* Display coin balance as secondary info */}
+                    <Text color="gray.600">
+                      {Number(holding.balance).toFixed(4)} {holding.currency}
+                      <StatArrow type={Number(prices[index].price) > 0 ? 'increase' : 'decrease'} />
+                    </Text>
+                  </>
                 )}
               </Stat>
             </CardBody>
