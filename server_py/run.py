@@ -3,7 +3,7 @@ import logging
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,  # Set to DEBUG to show debug-level logs
+    level=logging.DEBUG,  # Set to DEBUG to show debug-level logs
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 
