@@ -45,7 +45,7 @@ const Portfolio = () => {
       })
       return Promise.all(pricePromises)
     },
-    refetchInterval: 10000 // Refresh prices every 10 seconds
+    refetchInterval: 30000 // Refresh prices every 30 seconds
   })
 
   // Show loading state while fetching initial portfolio data
