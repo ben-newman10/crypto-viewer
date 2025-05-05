@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
+import python_multipart
 from .routers import crypto, recommendations
 
 # Load environment variables from .env file for configuration

@@ -3,7 +3,7 @@ Coinbase service module for interacting with the Coinbase Advanced Trade API.
 Handles authentication, data fetching, and formatting of cryptocurrency data.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import os
 from typing import List, Dict, Any
 import json
@@ -193,7 +193,7 @@ class CoinbaseService:
 
             return {
                 "price": str(current_price),
-                "time": latest_trade.get("time", datetime.utcnow().isoformat()),
+                "time": latest_trade.get("time", datetime.now(timezone.utc).isoformat()),
                 "change_24h": round(change_24h, 2),
                 "price_24h_ago": str(price_24h_ago)
             }
@@ -233,7 +233,7 @@ class CoinbaseService:
             # Use the product ID as-is since it's already formatted
             logging.info(f"Fetching historical data for {product_id}...")
 
-            end_time = datetime.utcnow()
+            end_time = datetime.now(timezone.utc)
             start_time = end_time - timedelta(days=1)
             granularity = 3600  # ONE_HOUR in seconds
 
