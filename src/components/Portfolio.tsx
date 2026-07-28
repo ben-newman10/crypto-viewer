@@ -1,95 +1,160 @@
 /**
- * Portfolio component displays the user's cryptocurrency holdings and their current values.
- * Features real-time price updates and responsive grid layout.
+ * Portfolio panel: headline figures plus the holdings list.
+ *
+ * Handles all four async states explicitly — first load (skeletons), failure
+ * (retryable error panel), no holdings (empty state) and no search matches —
+ * so the user never sees a blank region.
  */
 
-import { Box, Card, CardBody, Heading, Stack, Text, Stat, StatLabel, StatNumber, StatArrow, StatHelpText, Grid } from '@chakra-ui/react'
-import { useQuery } from '@tanstack/react-query'
+import { RepeatIcon, SearchIcon } from '@chakra-ui/icons'
+import {
+  Box,
+  Button,
+  Input,
+  InputGroup,
+  InputLeftElement,
+  VisuallyHidden,
+} from '@chakra-ui/react'
+import { useMemo, useState } from 'react'
 
-/**
- * Interface defining the structure of cryptocurrency holding data
- * received from the backend API
- */
-interface CryptoHolding {
-  currency: string    // The cryptocurrency symbol (e.g., 'BTC', 'ETH')
-  balance: string     // The total balance of the holding
-  available: string   // The available balance that can be traded
-}
-
-interface CryptoPrice {
-  price: string       // Current price
-  time: string       // Timestamp
-  change_24h: number // 24-hour price change percentage
-  price_24h_ago: string // Price 24 hours ago
-}
+import { usePortfolio } from '../hooks/usePortfolio'
+import SectionCard from './common/SectionCard'
+import StatePanel from './common/StatePanel'
+import HoldingsCards from './portfolio/HoldingsCards'
+import HoldingsTable from './portfolio/HoldingsTable'
+import {
+  DEFAULT_SORT,
+  filterHoldings,
+  nextSortState,
+  sortHoldings,
+  type SortKey,
+  type SortState,
+} from './portfolio/sorting'
 
 const Portfolio = () => {
-  // Fetch portfolio data with automatic refresh every 30 seconds
-  const { data: portfolio, isLoading } = useQuery<CryptoHolding[]>({
-    queryKey: ['portfolio'],
-    queryFn: async () => {
-      const response = await fetch('/api/crypto/portfolio')
-      return response.json()
-    },
-    refetchInterval: 30000 // Refresh every 30 seconds
-  })
+  const { holdings, isInitialLoading, isError, isEmpty, refetch, isRefetching } =
+    usePortfolio()
 
-  // Fetch real-time prices for each cryptocurrency in the portfolio
-  const { data: prices } = useQuery<CryptoPrice[]>({
-    queryKey: ['prices', portfolio],
-    enabled: !!portfolio, // Only fetch prices when portfolio data exists
-    queryFn: async () => {
-      const pricePromises = portfolio!.map(async (holding) => {
-        const response = await fetch(`/api/crypto/price/${holding.currency}-GBP`)
-        return response.json()
-      })
-      return Promise.all(pricePromises)
-    },
-    refetchInterval: 30000 // Refresh prices every 30 seconds
-  })
+  const [sort, setSort] = useState<SortState>(DEFAULT_SORT)
+  const [query, setQuery] = useState('')
 
-  // Show loading state while fetching initial portfolio data
-  if (isLoading) {
-    return <Box>Loading portfolio...</Box>
+  const visible = useMemo(
+    () => sortHoldings(filterHoldings(holdings, query), sort),
+    [holdings, query, sort],
+  )
+
+  const handleSort = (key: SortKey) => setSort((current) => nextSortState(current, key))
+
+  const body = () => {
+    if (isError) {
+      return (
+        <Box px={{ base: 4, md: 6 }} py={{ base: 4, md: 6 }}>
+          <StatePanel
+            tone="error"
+            title="We couldn't load your portfolio"
+            description="The Coinbase connection failed. Your balances are safe — this is a read-only view."
+            actionLabel="Try again"
+            onAction={() => void refetch()}
+            isActionLoading={isRefetching}
+            data-testid="portfolio-error"
+          />
+        </Box>
+      )
+    }
+
+    if (isEmpty) {
+      return (
+        <Box px={{ base: 4, md: 6 }} py={{ base: 4, md: 6 }}>
+          <StatePanel
+            tone="empty"
+            title="No holdings yet"
+            description="Once you hold a balance on Coinbase it will appear here, priced in GBP."
+            actionLabel="Refresh"
+            onAction={() => void refetch()}
+            isActionLoading={isRefetching}
+            data-testid="portfolio-empty"
+          />
+        </Box>
+      )
+    }
+
+    if (!isInitialLoading && visible.length === 0) {
+      return (
+        <Box px={{ base: 4, md: 6 }} py={{ base: 4, md: 6 }}>
+          <StatePanel
+            tone="empty"
+            title={`No assets match “${query.trim()}”`}
+            description="Try a different ticker, or clear the filter to see everything."
+            actionLabel="Clear filter"
+            onAction={() => setQuery('')}
+            data-testid="portfolio-no-matches"
+          />
+        </Box>
+      )
+    }
+
+    return (
+      <>
+        {/* Table on tablet and up, stacked cards on mobile. */}
+        <Box display={{ base: 'none', md: 'block' }}>
+          <HoldingsTable
+            holdings={visible}
+            sort={sort}
+            onSort={handleSort}
+            isLoading={isInitialLoading}
+          />
+        </Box>
+        <Box display={{ base: 'block', md: 'none' }}>
+          <HoldingsCards holdings={visible} isLoading={isInitialLoading} />
+        </Box>
+      </>
+    )
   }
 
   return (
-    <Stack spacing={4}>
-      <Heading size="lg">Your Crypto Portfolio</Heading>
-      {/* Responsive grid layout: 1 column on mobile, 2 on tablet, 3 on desktop */}
-      <Grid templateColumns={{ base: '1fr', md: 'repeat(2, 1fr)', lg: 'repeat(3, 1fr)' }} gap={4}>
-        {portfolio?.map((holding, index) => (
-          <Card key={holding.currency}>
-            <CardBody>
-              <Stat>
-                <StatLabel>{holding.currency}</StatLabel>
-                {prices?.[index] && (
-                  <>
-                    {/* Total value in GBP */}
-                    <StatNumber>
-                      £{(Number(holding.balance) * Number(prices[index].price)).toFixed(2)}
-                    </StatNumber>
-                    {/* Current price per coin */}
-                    <Text color="gray.600" fontSize="sm">
-                      Current Price: £{Number(prices[index].price).toFixed(2)}
-                    </Text>
-                    {/* 24h change with arrow */}
-                    <StatHelpText>
-                      <StatArrow type={prices[index].change_24h >= 0 ? 'increase' : 'decrease'} />
-                      {Math.abs(prices[index].change_24h).toFixed(2)}%
-                    </StatHelpText>
-                    {/* Balance */}
-                    <Text fontSize="sm" mt={1}>
-                      Balance: {Number(holding.balance).toFixed(4)} {holding.currency}
-                    </Text>
-                  </>
-                )}
-              </Stat>
-            </CardBody>
-          </Card>
-        ))}
-      </Grid>
-    </Stack>
+    <SectionCard
+      title="Holdings"
+      headingId="holdings-heading"
+      subtitle="Balances priced in GBP, refreshed every 30 seconds."
+      flushBody
+      actions={
+        <>
+          {/* Nothing to filter when the list is unavailable or empty. */}
+          <Box w={{ base: '100%', sm: '11rem' }} hidden={isError || isEmpty}>
+            {/* Visually hidden, but a real <label> bound to the input. */}
+            <VisuallyHidden as="label" htmlFor="holdings-filter">
+              Filter holdings by ticker
+            </VisuallyHidden>
+            <InputGroup size="sm">
+              <InputLeftElement pointerEvents="none">
+                <SearchIcon boxSize={3} color="fg.subtle" aria-hidden="true" />
+              </InputLeftElement>
+              <Input
+                id="holdings-filter"
+                placeholder="Filter by ticker"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                borderRadius="md"
+              />
+            </InputGroup>
+          </Box>
+
+          <Button
+            variant="outline"
+            size="sm"
+            leftIcon={<RepeatIcon aria-hidden="true" />}
+            onClick={() => void refetch()}
+            isLoading={isRefetching}
+            loadingText="Refreshing"
+            flexShrink={0}
+          >
+            Refresh
+          </Button>
+        </>
+      }
+    >
+      {body()}
+    </SectionCard>
   )
 }
 

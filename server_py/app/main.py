@@ -3,11 +3,13 @@ Main application module for the Crypto Viewer backend.
 Sets up FastAPI application with CORS middleware and API routers.
 """
 
+import os
+
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
-import os
-import python_multipart
+
+from .config import is_test_mode
 from .routers import crypto, recommendations
 
 # Load environment variables from .env file for configuration
@@ -21,10 +23,19 @@ app = FastAPI(
 )
 
 # Configure Cross-Origin Resource Sharing (CORS)
-# This allows the frontend application to make requests to the backend
+# This allows the frontend application to make requests to the backend.
+# Origins are configurable so that a preview build served on a different port
+# (as the E2E suite does) can be allowed without editing code.
+_default_origins = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173"
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv("CORS_ALLOW_ORIGINS", _default_origins).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],  # Frontend development server URL
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],  # Allow all HTTP methods (GET, POST, etc.)
     allow_headers=["*"],  # Allow all HTTP headers
@@ -55,5 +66,8 @@ async def root():
     return {
         "message": "Crypto Viewer API",
         "status": "online",
-        "version": "1.0.0"
+        "version": "1.0.0",
+        # Surfaced so the E2E harness can assert it is talking to a backend
+        # wired up with fake third-party clients before running any test.
+        "test_mode": is_test_mode(),
     }
