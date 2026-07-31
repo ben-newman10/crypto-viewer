@@ -1,41 +1,47 @@
 /**
- * Main application component that sets up the core providers and layout.
- * Uses ChakraUI for styling and React Query for data fetching/caching.
+ * Main application component that sets up the core providers, routing and
+ * layout.
+ *
+ * Chakra supplies the design system, React Query owns server state, and React
+ * Router provides addressable pages (which the E2E suite navigates directly).
  */
 
-import { ChakraProvider, Box, Grid, GridItem } from '@chakra-ui/react'
+import { ChakraProvider } from '@chakra-ui/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import Portfolio from './components/Portfolio'
-import Recommendations from './components/Recommendations'
+import { Route, Routes } from 'react-router-dom'
 
-// Initialize React Query client for managing server state and caching
-const queryClient = new QueryClient()
+import AppShell from './components/layout/AppShell'
+import CoinPage from './pages/CoinPage'
+import DashboardPage from './pages/DashboardPage'
+import NotFoundPage from './pages/NotFoundPage'
+import theme from './theme'
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // One retry smooths over a transient blip without leaving the user
+      // staring at a spinner when the backend is genuinely down.
+      retry: 1,
+      retryDelay: 400,
+      // Prices are polled on an interval; refetching on every focus change
+      // just adds noise.
+      refetchOnWindowFocus: false,
+      staleTime: 15_000,
+    },
+  },
+})
 
 function App() {
   return (
-    // ChakraProvider enables the use of Chakra UI components and theme
-    <ChakraProvider>
-      {/* QueryClientProvider enables React Query hooks throughout the app */}
+    <ChakraProvider theme={theme}>
       <QueryClientProvider client={queryClient}>
-        {/* Main layout container with responsive padding and background */}
-        <Box minH="100vh" bg="gray.50" p={4}>
-          {/* Responsive grid layout: single column on mobile, two columns on desktop */}
-          <Grid
-            templateColumns={{ base: '1fr', lg: '2fr 1fr' }}
-            gap={6}
-            maxW="1400px"
-            mx="auto"
-          >
-            {/* Portfolio section takes up more space in desktop view */}
-            <GridItem>
-              <Portfolio />
-            </GridItem>
-            {/* Recommendations section takes up less space in desktop view */}
-            <GridItem>
-              <Recommendations />
-            </GridItem>
-          </Grid>
-        </Box>
+        <AppShell>
+          <Routes>
+            <Route path="/" element={<DashboardPage />} />
+            <Route path="/coin/:currency" element={<CoinPage />} />
+            <Route path="*" element={<NotFoundPage />} />
+          </Routes>
+        </AppShell>
       </QueryClientProvider>
     </ChakraProvider>
   )

@@ -8,8 +8,11 @@ Crypto Viewer is a web application built with React, TypeScript, and Vite for tr
 
 - View your cryptocurrency portfolio with real-time updates (30-second refresh)
 - Fetch live cryptocurrency prices with 24-hour change indicators
+- Per-asset detail pages with a 24-hour price chart and an accessible data-table alternative
 - Get AI-powered cryptocurrency recommendations based on your portfolio
-- Responsive design using Chakra UI components
+- Light and dark themes built on a shared design-token system
+- Responsive design (desktop, tablet, mobile) using Chakra UI components
+- Accessible to WCAG 2.1 AA, verified by automated axe-core scans in CI
 - Real-time integration with Coinbase Advanced Trade API
 - Historical price data visualization
 
@@ -117,23 +120,78 @@ The backend provides the following API endpoints:
   npm run lint
   ```
 
+### Type checking
+
+```bash
+npm run typecheck   # tsc -b across the app, build tooling and E2E projects
+```
+
 ### Testing
 
-- Backend tests can be run using `pytest`:
+#### Backend (pytest)
 
-  ```bash
-  cd server_py
-  source venv/bin/activate  # On Windows: venv\Scripts\activate
-  pytest
-  ```
+```bash
+cd server_py
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pytest
+```
 
-  Run specific test files:
-  ```bash
-  pytest test_ai_service.py
-  pytest test_coinbase_service.py
-  pytest test_crypto_router.py
-  pytest test_recommendations_router.py
-  ```
+Run specific test files:
+
+```bash
+pytest test_ai_service.py
+pytest test_coinbase_service.py
+pytest test_crypto_router.py
+pytest test_recommendations_router.py
+```
+
+The backend suite runs in **test mode** (see below), so it needs no API
+credentials and makes no third-party requests.
+
+#### End-to-end (Playwright)
+
+```bash
+npx playwright test          # or: npm run test:e2e
+npm run test:e2e:ui          # interactive runner
+npm run test:e2e:report      # open the last HTML report
+```
+
+Playwright starts everything it needs: a FastAPI backend in test mode on port
+`3101` and a production frontend build served by `vite preview` on port `4173`
+with `/api` proxied to the backend. Tests therefore exercise the real
+frontend ↔ backend HTTP path; only the outbound Coinbase and OpenAI calls are
+faked. A fixture fails any test whose browser tries to reach a non-local host,
+so "no real third-party calls" is enforced rather than assumed.
+
+Full-page screenshots of every major view at 1440px, 768px and 375px are
+written to [`screenshots/`](screenshots) as part of the run.
+
+### Backend test mode
+
+Setting `CRYPTO_VIEWER_TEST_MODE=1` swaps the Coinbase and OpenAI clients for
+in-process fakes that serve fixture data
+(`server_py/app/services/fakes/`). Nothing else about the application changes:
+the same routers, dependency wiring and HTTP stack are used.
+
+```bash
+cd server_py
+CRYPTO_VIEWER_TEST_MODE=1 ./venv/bin/python -m uvicorn app.main:app --port 3001
+```
+
+Individual scenarios are selected per request with the `cv_test_scenario`
+cookie, so parallel tests never interfere with one another. Flags may be
+combined with commas:
+
+| Flag | Behaviour |
+| --- | --- |
+| `empty-portfolio` | Portfolio returns no holdings |
+| `error-portfolio` | Portfolio request fails (HTTP 500) |
+| `error-prices` | Price lookups return an `error` payload |
+| `error-historical` | Candle history request fails |
+| `error-ai` | Analysis request fails (HTTP 500) |
+| `degraded-ai` | Analysis returns the service's fallback text |
+| `slow-portfolio`, `slow-prices`, `slow-historical`, `slow-ai` | Delay that response by ~1.2s |
+| `slow` / `error` | Apply every slow / error flag at once |
 
 ## Deployment
 

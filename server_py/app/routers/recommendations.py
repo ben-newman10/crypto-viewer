@@ -1,18 +1,23 @@
 # This module defines the API endpoint for generating cryptocurrency recommendations.
 # It fetches portfolio data, market data, and AI-based recommendations.
+#
+# Both the Coinbase and OpenAI clients arrive via FastAPI dependencies so tests
+# can substitute fakes and never call a third-party API.
 
-from fastapi import APIRouter, HTTPException
-from typing import Dict, Any
 import logging
-from app.services.coinbase_service import CoinbaseService
-from app.services.ai_service import AIService
+from typing import Any, Dict
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from ..dependencies import get_ai_service, get_coinbase_service
 
 router = APIRouter()
-coinbase_service = CoinbaseService()
-ai_service = AIService()
 
 @router.get("/")
-async def get_recommendations() -> Dict[str, str]:
+async def get_recommendations(
+    coinbase_service = Depends(get_coinbase_service),
+    ai_service = Depends(get_ai_service),
+) -> Dict[str, str]:
     """
     Fetches cryptocurrency recommendations.
 
@@ -60,7 +65,10 @@ async def get_recommendations() -> Dict[str, str]:
         raise HTTPException(status_code=500, detail="Failed to generate recommendations")
 
 @router.get("/analysis")
-async def get_analysis() -> Dict[str, Any]:
+async def get_analysis(
+    coinbase_service = Depends(get_coinbase_service),
+    ai_service = Depends(get_ai_service),
+) -> Dict[str, Any]:
     """
     Fetches detailed cryptocurrency analysis and recommendations.
 
@@ -81,9 +89,9 @@ async def get_analysis() -> Dict[str, Any]:
         market_data = []
 
         for account in portfolio:
+            # Format the product ID for fetching market data (e.g., BTC-GBP)
+            product_id = f"{account['currency']}-GBP"
             try:
-                # Format the product ID for fetching market data (e.g., BTC-GBP)
-                product_id = f"{account['currency']}-GBP"
                 # Fetch current price and historical data for the asset
                 price_data = await coinbase_service.get_crypto_price(product_id)
                 historical_data = await coinbase_service.get_historical_data(product_id)

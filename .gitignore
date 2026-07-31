@@ -26,3 +26,14 @@ dist-ssr
 test.py
 *.pyc
 example-*.json
+
+# Python
+server_py/venv/
+__pycache__/
+.pytest_cache/
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
