@@ -27,9 +27,29 @@ SLOW_PRICES = "slow-prices"
 SLOW_HISTORICAL = "slow-historical"
 SLOW_AI = "slow-ai"
 
+# --- Grounding-data flags ---------------------------------------------------
+# These do not simulate an outage: they simulate *thin data*, which the
+# pipeline is supposed to answer with a lower confidence rating rather than an
+# error. They exist so the confidence rubric can be exercised end to end.
+
+#: Only 40 daily candles, so the 50- and 200-day averages and the crossover
+#: state cannot be computed. Costs the whole `trend` signal category.
+SHORT_HISTORY = "short-history"
+
+#: CoinGecko and the Fear & Greed Index are unreachable. Costs the
+#: `market_structure` and `sentiment` categories.
+ERROR_MARKET_CONTEXT = "error-market-context"
+
+#: The model quotes a number that is not in the grounding context and cites a
+#: field that does not exist -- on every attempt, including the retry. Drives
+#: the server-side groundedness check through correction and downgrade.
+UNGROUNDED_AI = "ungrounded-ai"
+
 # Convenience aggregate flags.
 SLOW_ALL = "slow"
 ERROR_ALL = "error"
+#: Thin grounding data from every direction at once: the low-confidence case.
+PARTIAL_DATA = "partial-data"
 
 KNOWN_FLAGS: FrozenSet[str] = frozenset(
     {
@@ -43,13 +63,18 @@ KNOWN_FLAGS: FrozenSet[str] = frozenset(
         SLOW_PRICES,
         SLOW_HISTORICAL,
         SLOW_AI,
+        SHORT_HISTORY,
+        ERROR_MARKET_CONTEXT,
+        UNGROUNDED_AI,
         SLOW_ALL,
         ERROR_ALL,
+        PARTIAL_DATA,
     }
 )
 
 _SLOW_EXPANSION = {SLOW_PORTFOLIO, SLOW_PRICES, SLOW_HISTORICAL, SLOW_AI}
 _ERROR_EXPANSION = {ERROR_PORTFOLIO, ERROR_PRICES, ERROR_HISTORICAL, ERROR_AI}
+_PARTIAL_EXPANSION = {SHORT_HISTORY, ERROR_MARKET_CONTEXT}
 
 
 class Scenario:
@@ -72,6 +97,8 @@ class Scenario:
             flags |= _SLOW_EXPANSION
         if ERROR_ALL in flags:
             flags |= _ERROR_EXPANSION
+        if PARTIAL_DATA in flags:
+            flags |= _PARTIAL_EXPANSION
 
         return cls(frozenset(flags & KNOWN_FLAGS))
 

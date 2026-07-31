@@ -5,8 +5,9 @@ Everything here is static (or derived from a fixed seed) so that E2E
 assertions and screenshots are stable across runs.
 """
 
+import math
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # Portfolio
@@ -109,8 +110,153 @@ def historical_for(product_id: str) -> List[Dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
+# Long-run daily candles
+# ---------------------------------------------------------------------------
+# The recommendation pipeline needs several hundred daily closes to compute a
+# 200-day moving average. These are generated from a closed-form shape function
+# rather than a random walk so that every indicator value -- and therefore every
+# assertion and screenshot in the E2E suite -- is identical on every run.
+
+#: Daily candles the fake serves, matching the real service's request size.
+DAILY_CANDLE_COUNT = 300
+
+#: Per-asset shape parameters, chosen so the three holdings sit in genuinely
+#: different technical situations: BTC in an established uptrend, ETH roughly
+#: range-bound, SOL in a downtrend. That gives the UI (and the tests) a mix of
+#: crossover states and momentum readings rather than three of the same.
+_DAILY_SHAPE: Dict[str, Dict[str, float]] = {
+    #: ``drift`` is the log-change from the oldest candle to the newest, so a
+    #: positive value means the series rose over the window.
+    "BTC-GBP": {"drift": 0.62, "amplitude": 0.055, "period": 47.0, "phase": 0.0},
+    "ETH-GBP": {"drift": 0.08, "amplitude": 0.085, "period": 61.0, "phase": 1.1},
+    "SOL-GBP": {"drift": -0.28, "amplitude": 0.115, "period": 39.0, "phase": 2.3},
+}
+
+
+def _daily_close(latest: float, index: int, count: int, shape: Dict[str, float]) -> float:
+    """
+    Closing price ``index`` bars into a ``count``-bar series ending at ``latest``.
+
+    Both the trend and the oscillation terms are normalised to 1 at the final
+    bar, so the series always ends exactly on the fixture's current price and
+    the candle data agrees with the price endpoint.
+    """
+    last = count - 1
+    position = (index - last) / last  # -1 at the oldest bar, 0 at the newest
+
+    trend = math.exp(shape["drift"] * position)
+
+    def wave(at: int) -> float:
+        # Three terms: a slow cycle, a slower one that stops the series from
+        # repeating cleanly, and a fast one that supplies day-to-day movement.
+        # Without the fast term the realised-volatility figure comes out near
+        # zero, which would make the volatility signal category meaningless in
+        # every test and screenshot.
+        angle = 2 * math.pi * at / shape["period"] + shape["phase"]
+        return (
+            math.sin(angle)
+            + 0.4 * math.sin(angle * 0.37)
+            + 0.55 * math.sin(angle * 7.7 + 0.9)
+        )
+
+    oscillation = 1 + shape["amplitude"] * (wave(index) - wave(last))
+
+    return latest * trend * oscillation
+
+
+def daily_candles_for(product_id: str, count: int = DAILY_CANDLE_COUNT) -> List[Dict[str, str]]:
+    """
+    Build a deterministic daily candle series, newest first.
+
+    Matches the ordering of the live Coinbase candles endpoint, which the
+    context builder reverses before computing indicators.
+
+    The full series is always generated and then truncated from the newest end,
+    so a shortened request returns exactly the bars a full request would have
+    returned -- a "less history" scenario really is the same data with the old
+    bars removed, not a differently-shaped series.
+    """
+    key = product_id.upper()
+    base = PRICES.get(key)
+    shape = _DAILY_SHAPE.get(key)
+    if base is None or shape is None:
+        raise ValueError(f"No daily candle data available for {product_id}")
+
+    latest = float(base["price"])
+    total = DAILY_CANDLE_COUNT
+    closes = [_daily_close(latest, index, total, shape) for index in range(total)]
+
+    candles: List[Dict[str, str]] = []
+    for index in range(total - 1, -1, -1):  # newest first
+        close = closes[index]
+        open_ = closes[index - 1] if index > 0 else close
+        timestamp = REFERENCE_TIME - timedelta(days=(total - 1 - index))
+        candles.append(
+            {
+                "time": timestamp.isoformat(),
+                "low": f"{min(open_, close) * 0.988:.2f}",
+                "high": f"{max(open_, close) * 1.012:.2f}",
+                "open": f"{open_:.2f}",
+                "close": f"{close:.2f}",
+                "volume": f"{1840.5 + (index % 23) * 61.4:.2f}",
+            }
+        )
+
+    return candles[: max(1, min(count, total))]
+
+
+# ---------------------------------------------------------------------------
+# Supplementary market context
+# ---------------------------------------------------------------------------
+# Stands in for CoinGecko (market cap, circulating supply, all-time high) and
+# alternative.me (Fear & Greed Index).
+
+MARKET_STATS: Dict[str, Dict[str, Optional[float]]] = {
+    "BTC": {
+        "market_cap": 1_031_400_000_000.0,
+        "circulating_supply": 19_712_000.0,
+        "ath": 57_800.0,
+        "ath_change_pct": -9.44,
+    },
+    "ETH": {
+        "market_cap": 295_600_000_000.0,
+        "circulating_supply": 120_310_000.0,
+        "ath": 3_910.0,
+        "ath_change_pct": -37.18,
+    },
+    "SOL": {
+        "market_cap": 55_900_000_000.0,
+        "circulating_supply": 471_900_000.0,
+        "ath": 210.5,
+        "ath_change_pct": -43.73,
+    },
+}
+
+FEAR_GREED_VALUE = 61.0
+FEAR_GREED_CLASSIFICATION = "Greed"
+
+
+# ---------------------------------------------------------------------------
 # AI recommendations
 # ---------------------------------------------------------------------------
+# The direction and self-reported confidence the fake model returns per asset.
+# Fixed per symbol so the E2E suite can assert on a specific badge. The
+# supporting facts are *not* fixed: the fake reads them out of the grounding
+# context it is given, which is what makes the groundedness check meaningful
+# end to end rather than a check against another fixture.
+
+FAKE_CALLS: Dict[str, Dict[str, str]] = {
+    "BTC": {"recommendation": "hold", "confidence": "high"},
+    "ETH": {"recommendation": "buy", "confidence": "medium"},
+    "SOL": {"recommendation": "sell", "confidence": "low"},
+}
+
+FAKE_SUMMARY = (
+    "The portfolio is concentrated in three large-cap assets alongside a cash "
+    "balance. The available technical signals point in different directions "
+    "across the three holdings, so each is assessed on its own evidence below."
+)
+
 
 RECOMMENDATIONS_MARKDOWN = """## Portfolio Overview
 

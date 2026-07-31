@@ -12,6 +12,16 @@ from coinbase.rest import RESTClient
 import httpx
 import logging
 
+#: Candle granularities accepted by the Coinbase exchange candles endpoint.
+ONE_HOUR = 3600
+ONE_DAY = 86400
+
+#: The endpoint returns at most 300 candles per request. 300 daily candles is
+#: enough history for a 200-period moving average plus the lookback needed to
+#: tell a fresh crossover from a long-standing one.
+MAX_CANDLES = 300
+
+
 class CoinbaseService:
     """
     Service class for interacting with Coinbase Advanced Trade API.
@@ -266,3 +276,60 @@ class CoinbaseService:
         except Exception as e:
             logging.error(f"Error fetching historical data for {product_id}: {e}", exc_info=True)
             raise
+
+    async def get_candles(
+        self,
+        product_id: str,
+        granularity: int = ONE_DAY,
+        limit: int = MAX_CANDLES,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch a longer candle series than the 24-hour window used by the charts.
+
+        The recommendation pipeline needs several hundred bars to compute a
+        200-period moving average, so this takes the granularity and window
+        size as arguments rather than hard-coding one day of hourly candles.
+
+        Args:
+            product_id: Trading pair identifier (e.g. 'BTC-GBP')
+            granularity: Candle width in seconds (3600 hourly, 86400 daily)
+            limit: Number of candles to request, capped at the endpoint's 300
+
+        Returns:
+            Candles in the same shape as ``get_historical_data``, newest first.
+
+        Raises:
+            Exception: If the upstream request fails.
+        """
+        limit = max(1, min(limit, MAX_CANDLES))
+
+        end_time = datetime.now(timezone.utc)
+        start_time = end_time - timedelta(seconds=granularity * limit)
+
+        url = f"https://api.exchange.coinbase.com/products/{product_id}/candles"
+        params = {
+            "start": start_time.isoformat(),
+            "end": end_time.isoformat(),
+            "granularity": granularity,
+        }
+
+        logging.info(
+            "Fetching %s candles for %s at %ss granularity", limit, product_id, granularity
+        )
+
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            candles = response.json()
+
+        return [
+            {
+                "time": datetime.fromtimestamp(candle[0], tz=timezone.utc).isoformat(),
+                "low": str(candle[1]),
+                "high": str(candle[2]),
+                "open": str(candle[3]),
+                "close": str(candle[4]),
+                "volume": str(candle[5]),
+            }
+            for candle in candles
+        ]

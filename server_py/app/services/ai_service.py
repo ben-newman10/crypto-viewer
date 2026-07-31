@@ -1,41 +1,246 @@
 """
-AI service module for generating cryptocurrency trading recommendations.
-Uses OpenAI's GPT models to analyze portfolio and market data.
+AI service: turns a grounding context into a validated, structured call.
+
+Three things changed the character of this module compared with a plain
+"ask the model for advice" prompt:
+
+* It is handed **finished metrics**, never a raw price series. Nothing here
+  asks the model to compute anything.
+* It uses **structured outputs** with a JSON schema, and validates the reply
+  against a Pydantic model before returning it. Nothing downstream parses
+  prose.
+* The prompt makes the field list a **closed world**: cite these names or say
+  nothing, and treat a gap as a reason to lower confidence rather than a gap to
+  write around.
+
+The prompt is necessary but not sufficient -- ``services/groundedness.py``
+re-checks every claim after the fact. This module's job is to make compliance
+easy and machine-checkable, not to be trusted.
 """
 
-from typing import Dict, List, Any
-import os
+import json
 import logging
-from openai import AsyncOpenAI
+import os
+from typing import Any, Dict, List, Optional
+
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
+
+from ..schemas import from_dict
+from ..schemas.grounding import CONFIDENCE_RUBRIC, Metric, RecommendationContext
+from ..schemas.recommendation import ModelPayload
+from .ai_errors import AIUnavailableError
+
+#: Low, but not zero. This is a structured, numeric task where consistency
+#: between runs matters far more than variety of phrasing.
+TEMPERATURE = 0.25
+
+DEFAULT_MODEL = "gpt-4.1"
+
+SYSTEM_PROMPT = f"""\
+You are a cryptocurrency analyst working under strict grounding rules. You are
+given a GROUNDING CONTEXT: a closed list of named fields, each with a value or
+the marker `unavailable`.
+
+Rules, in order of priority:
+
+1. You may state only what is in the grounding context. Do not use any price,
+   indicator, statistic, news item or market fact from your own knowledge, and
+   do not estimate, extrapolate or infer a value that is not given.
+2. Every supporting fact must name one field exactly as it is written in the
+   context (for example `BTC.rsi_14`) and copy that field's value character for
+   character. Do not round, reformat, convert units or paraphrase a number.
+3. A field marked `unavailable` has no value. Never supply one for it. Its
+   absence is evidence about your confidence, not a gap to write around.
+4. Missing data lowers confidence. If a signal category is unavailable, say so
+   in `confidence_rationale` and rate confidence lower. Never keep a high
+   confidence while hedging the wording.
+5. If the available fields disagree with one another, that is a low-confidence
+   situation. Say which fields conflict.
+6. Do not include disclaimers, legal language or advice framing. That is added
+   separately and is not your responsibility.
+
+Confidence rubric -- rate yourself against this exactly:
+
+{CONFIDENCE_RUBRIC}
+
+Return one recommendation per asset listed in the context, using the required
+schema. `summary` is two or three sentences about the portfolio as a whole,
+under the same grounding rules.\
+"""
+
+#: Structured-outputs schema. Written by hand rather than generated from the
+#: Pydantic model so it satisfies OpenAI's strict mode (every property
+#: required, `additionalProperties` false everywhere) and stays readable as the
+#: contract it is.
+RESPONSE_FORMAT: Dict[str, Any] = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "portfolio_recommendations",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["summary", "recommendations"],
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "Two or three sentences on the portfolio as a whole, "
+                        "grounded in context fields only."
+                    ),
+                },
+                "recommendations": {
+                    "type": "array",
+                    "description": "One entry per asset in the grounding context.",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": [
+                            "symbol",
+                            "recommendation",
+                            "confidence",
+                            "confidence_rationale",
+                            "supporting_facts",
+                            "risks_or_caveats",
+                        ],
+                        "properties": {
+                            "symbol": {"type": "string"},
+                            "recommendation": {
+                                "type": "string",
+                                "enum": ["buy", "sell", "hold"],
+                            },
+                            "confidence": {
+                                "type": "string",
+                                "enum": ["low", "medium", "high"],
+                            },
+                            "confidence_rationale": {
+                                "type": "string",
+                                "description": (
+                                    "Why this confidence level, referring explicitly to "
+                                    "data completeness and to whether the available "
+                                    "signal categories agree."
+                                ),
+                            },
+                            "supporting_facts": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "additionalProperties": False,
+                                    "required": ["metric", "value", "interpretation"],
+                                    "properties": {
+                                        "metric": {
+                                            "type": "string",
+                                            "description": (
+                                                "Exact field name from the grounding "
+                                                "context."
+                                            ),
+                                        },
+                                        "value": {
+                                            "type": "string",
+                                            "description": (
+                                                "That field's value, copied character "
+                                                "for character."
+                                            ),
+                                        },
+                                        "interpretation": {
+                                            "type": "string",
+                                            "description": (
+                                                "One sentence on what this value implies."
+                                            ),
+                                        },
+                                    },
+                                },
+                            },
+                            "risks_or_caveats": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": (
+                                    "What would invalidate this call, including any "
+                                    "unavailable fields that would have mattered."
+                                ),
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+def render_metric(metric: Metric) -> str:
+    """One context line: the citable name, its value, and how to read it."""
+    unit = f" {metric.unit}" if metric.unit and metric.is_available else ""
+    line = f"  {metric.field} = {metric.rendered()}{unit}"
+    if metric.note:
+        line += f"   ({metric.note})"
+    return line
+
+
+def render_context(context: RecommendationContext) -> str:
+    """
+    Render the grounding context as the closed field list the prompt describes.
+
+    Unavailable fields are listed alongside available ones, on purpose: the
+    model has to be able to see what is missing in order to react to it.
+    """
+    lines: List[str] = [
+        "GROUNDING CONTEXT",
+        f"generated_at = {context.generated_at}",
+        f"quote_currency = {context.quote_currency}",
+        "",
+        "Portfolio and market-wide fields:",
+    ]
+    lines.extend(render_metric(metric) for metric in context.shared_metrics)
+
+    for asset in context.assets:
+        completeness = asset.completeness
+        lines.append("")
+        lines.append(
+            f"Asset {asset.symbol} ({asset.product_id}) -- "
+            f"data completeness {completeness.ratio:.0%} "
+            f"({completeness.available}/{completeness.total} fields), "
+            f"signal categories available: "
+            f"{', '.join(completeness.categories_available) or 'none'}; "
+            f"missing: {', '.join(completeness.categories_missing) or 'none'}"
+        )
+        lines.extend(render_metric(metric) for metric in asset.metrics)
+
+    lines.append("")
+    lines.append(
+        "Sources: "
+        + ", ".join(f"{name}={state}" for name, state in sorted(context.sources.items()))
+    )
+    return "\n".join(lines)
+
 
 class AIService:
     """
-    Service class for generating AI-powered cryptocurrency trading recommendations.
-    Utilizes OpenAI's GPT models to analyze portfolio composition and market trends.
+    Generates structured, grounded recommendations from a context object.
+
+    Kept as a singleton because constructing the OpenAI client is not free and
+    the service holds no per-request state.
     """
 
     _instance = None
 
     def __new__(cls):
-        """Implement singleton pattern to ensure only one AI service instance exists."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self):
-        """
-        Initialize the AI service with OpenAI API credentials.
-        Checks environment variables for API key and feature flag.
-        """
-        # Skip initialization if already done
-        if hasattr(self, 'initialized'):
+        if hasattr(self, "initialized"):
             return
-            
+
         load_dotenv()
         self.api_key = os.getenv("OPENAI_API_KEY")
-        self.enable_ai_recommendations = os.getenv("ENABLE_AI_RECOMMENDATIONS", "true").lower() == "true"
-        
+        self.model = os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
+        self.enable_ai_recommendations = (
+            os.getenv("ENABLE_AI_RECOMMENDATIONS", "true").lower() == "true"
+        )
+
         if not self.api_key or self.api_key == "your_openai_api_key":
             logging.warning("Missing or invalid OPENAI_API_KEY")
             self.client = None
@@ -46,56 +251,83 @@ class AIService:
             except Exception as e:
                 logging.error(f"Failed to initialize OpenAI client: {e}")
                 self.client = None
-        
+
         self.initialized = True
 
-    async def get_recommendations(self, portfolio: List[Dict[str, Any]], market_data: List[Dict[str, Any]]) -> str:
+    async def generate(
+        self,
+        context: RecommendationContext,
+        feedback: Optional[str] = None,
+    ) -> ModelPayload:
         """
-        Generate cryptocurrency trading recommendations based on portfolio and market data.
-        
+        Call the model once and return its validated answer.
+
         Args:
-            portfolio: List of dictionaries containing current holdings
-            market_data: List of dictionaries containing price and historical data
-        
-        Returns:
-            String containing newline-separated recommendations
+            context: The closed set of fields the model may reference.
+            feedback: Correction text from a failed groundedness check. When
+                present this is a retry, and the message names exactly which
+                citations were wrong.
+
+        Raises:
+            AIUnavailableError: The feature is off, unconfigured, the upstream
+                call failed, or the reply did not satisfy the schema.
         """
         if not self.enable_ai_recommendations:
-            return "AI recommendations are disabled. Please enable them in the .env file."
+            raise AIUnavailableError(
+                "AI recommendations are disabled. Enable them in the .env file."
+            )
 
         if not self.client:
-            return "AI recommendations are not available. Please check your OPENAI_API_KEY configuration."
+            raise AIUnavailableError(
+                "AI recommendations are not available. Check your OPENAI_API_KEY "
+                "configuration."
+            )
+
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": (
+                    f"{render_context(context)}\n\n"
+                    "Produce one recommendation per asset above, citing only the field "
+                    "names shown and copying their values exactly."
+                ),
+            },
+        ]
+        if feedback:
+            messages.append({"role": "user", "content": feedback})
 
         try:
-            prompt = f"""As a cryptocurrency expert analyst, provide specific buy, sell, or hold recommendations based on the following portfolio and market data:
-
-Portfolio: {portfolio}
-Recent Market Data: {market_data}
-
-Please analyze the current market conditions, trends, and portfolio composition to provide:
-1. Specific recommendations for each holding
-2. Potential new investments to consider
-3. Risk assessment
-4. Market trend analysis
-
-Provide concise, actionable insights."""
-
             response = await self.client.chat.completions.create(
-                model="gpt-4.1",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are an expert cryptocurrency analyst with deep knowledge of market trends, technical analysis, and risk management."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.7,
-                max_tokens=1000
+                model=self.model,
+                messages=messages,
+                temperature=TEMPERATURE,
+                response_format=RESPONSE_FORMAT,
+                max_tokens=2000,
             )
-            return response.choices[0].message.content
-        except Exception as e:
-            logging.error(f"OpenAI API error: {e}")
-            return "Unable to generate recommendations at this time. Please try again later."
+        except Exception as error:  # noqa: BLE001
+            logging.error("OpenAI API error: %s", error)
+            raise AIUnavailableError("The analysis service did not respond.") from error
+
+        choice = response.choices[0]
+        refusal = getattr(choice.message, "refusal", None)
+        if refusal:
+            raise AIUnavailableError(f"The model declined to answer: {refusal}")
+
+        content = choice.message.content
+        if not content:
+            raise AIUnavailableError("The analysis service returned an empty response.")
+
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as error:
+            logging.error("Model returned non-JSON content: %s", content[:400])
+            raise AIUnavailableError("The analysis service returned an unreadable response.") from error
+
+        try:
+            return from_dict(ModelPayload, data)
+        except Exception as error:  # noqa: BLE001 - pydantic ValidationError shape varies
+            logging.error("Model response failed schema validation: %s", error)
+            raise AIUnavailableError(
+                "The analysis service returned a response in an unexpected shape."
+            ) from error

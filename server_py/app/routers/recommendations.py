@@ -1,120 +1,75 @@
-# This module defines the API endpoint for generating cryptocurrency recommendations.
-# It fetches portfolio data, market data, and AI-based recommendations.
-#
-# Both the Coinbase and OpenAI clients arrive via FastAPI dependencies so tests
-# can substitute fakes and never call a third-party API.
+"""
+API endpoints for grounded, confidence-rated recommendations.
+
+The router is deliberately thin: it wires up the injected services and hands
+off to ``services/recommendation_service.py``, which owns the grounding,
+verification, disclaimer injection and logging. Both the Coinbase and OpenAI
+clients arrive via FastAPI dependencies so tests can substitute fakes and never
+call a third-party API.
+"""
 
 import logging
-from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from ..dependencies import get_ai_service, get_coinbase_service
+from ..dependencies import get_ai_service, get_coinbase_service, get_market_context_service
+from ..schemas.recommendation import RecommendationResponse
+from ..services import recommendation_service
 
 router = APIRouter()
 
-@router.get("/")
+
+async def _generate(coinbase_service, ai_service, market_context_service) -> RecommendationResponse:
+    """
+    Shared handler.
+
+    A failure that reaches here is an unexpected one -- a Coinbase outage, a
+    bug -- and becomes a 500. A model that is merely unconfigured or
+    unreachable is *not* an error: it comes back as a 200 with
+    ``status="unavailable"``, because the portfolio data is still good and the
+    UI should say so rather than blanking the panel.
+    """
+    try:
+        return await recommendation_service.generate(
+            coinbase_service=coinbase_service,
+            ai_service=ai_service,
+            market_context_service=market_context_service,
+        )
+    except Exception as error:
+        logging.error(f"Error generating recommendations: {error}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate recommendations")
+
+
+@router.get("/", response_model=RecommendationResponse)
 async def get_recommendations(
-    coinbase_service = Depends(get_coinbase_service),
-    ai_service = Depends(get_ai_service),
-) -> Dict[str, str]:
+    coinbase_service=Depends(get_coinbase_service),
+    ai_service=Depends(get_ai_service),
+    market_context_service=Depends(get_market_context_service),
+) -> RecommendationResponse:
     """
-    Fetches cryptocurrency recommendations.
+    Grounded buy/sell/hold calls for every holding in the portfolio.
 
-    Returns:
-        A dictionary containing AI-generated recommendations based on the user's portfolio and market data.
+    Each call carries a confidence rating tied to the documented rubric, the
+    supporting facts it was built from (every one verified against the
+    grounding data server-side), and a server-injected disclaimer.
 
     Raises:
-        HTTPException: If there is an error in generating recommendations.
+        HTTPException(500): If portfolio or market data could not be gathered.
     """
-    try:
-        # Get portfolio data from the Coinbase service.
-        portfolio = await coinbase_service.get_portfolio()
-        if not portfolio:
-            return {"recommendations": "No cryptocurrency holdings found in your portfolio."}
+    return await _generate(coinbase_service, ai_service, market_context_service)
 
-        # Initialize a list to store market data for each asset in the portfolio.
-        market_data = []
 
-        for holding in portfolio:
-            try:
-                # Format the product ID for fetching market data
-                product_id = f"{holding['currency']}-GBP"
-                # Fetch historical data for the asset
-                data = await coinbase_service.get_historical_data(product_id)
-                # Append the fetched data to the market_data list
-                market_data.append({
-                    "currency": holding["currency"],
-                    "data": data
-                })
-            except Exception as e:
-                logging.error(f"Error fetching data for {holding['currency']}: {e}")
-                continue
-
-        if not market_data:
-            return {"recommendations": "Unable to fetch market data for your holdings."}
-
-        # Get AI-based recommendations using the portfolio and market data.
-        recommendations = await ai_service.get_recommendations(portfolio, market_data)
-
-        # Return the recommendations as a JSON response.
-        return {"recommendations": recommendations}
-
-    except Exception as e:
-        logging.error(f"Error generating recommendations: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate recommendations")
-
-@router.get("/analysis")
+@router.get("/analysis", response_model=RecommendationResponse)
 async def get_analysis(
-    coinbase_service = Depends(get_coinbase_service),
-    ai_service = Depends(get_ai_service),
-) -> Dict[str, Any]:
+    coinbase_service=Depends(get_coinbase_service),
+    ai_service=Depends(get_ai_service),
+    market_context_service=Depends(get_market_context_service),
+) -> RecommendationResponse:
     """
-    Fetches detailed cryptocurrency analysis and recommendations.
+    Alias of the root endpoint, kept for existing callers.
 
-    Returns:
-        A dictionary containing AI-generated recommendations based on the user's portfolio,
-        current prices, and historical market data.
-
-    Raises:
-        HTTPException: If there is an error in generating recommendations.
+    The two used to differ only in how much market data they gathered before
+    building the prompt. Now that the grounding context is built the same way
+    for every request, there is nothing left for them to differ on.
     """
-    try:
-        # Get portfolio data from the Coinbase service.
-        portfolio = await coinbase_service.get_portfolio()
-        if not portfolio:
-            return {"recommendations": "No cryptocurrency holdings found in your portfolio."}
-
-        # Initialize a list to store market data for each asset in the portfolio.
-        market_data = []
-
-        for account in portfolio:
-            # Format the product ID for fetching market data (e.g., BTC-GBP)
-            product_id = f"{account['currency']}-GBP"
-            try:
-                # Fetch current price and historical data for the asset
-                price_data = await coinbase_service.get_crypto_price(product_id)
-                historical_data = await coinbase_service.get_historical_data(product_id)
-
-                # Append the fetched data to the market_data list
-                market_data.append({
-                    "currency": account["currency"],
-                    "current_price": price_data,
-                    "historical_data": historical_data
-                })
-            except Exception as e:
-                logging.error(f"Error fetching market data for {product_id}: {e}")
-                continue
-
-        if not market_data:
-            return {"recommendations": "Unable to fetch market data for your holdings."}
-
-        # Get AI-based recommendations using the portfolio and market data.
-        recommendations = await ai_service.get_recommendations(portfolio, market_data)
-
-        # Return the recommendations as a JSON response.
-        return {"recommendations": recommendations}
-
-    except Exception as e:
-        logging.error(f"Error generating recommendations: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate recommendations")
+    return await _generate(coinbase_service, ai_service, market_context_service)

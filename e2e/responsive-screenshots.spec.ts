@@ -8,7 +8,7 @@
  */
 
 import { expect, test } from './support/fixtures'
-import { BREAKPOINTS, captureFullPage } from './support/screenshots'
+import { BREAKPOINTS, captureElement, captureFullPage } from './support/screenshots'
 import { Scenario, useScenario } from './support/scenarios'
 
 /** The page must never scroll sideways at any supported width. */
@@ -86,6 +86,52 @@ test.describe('Additional screenshots', () => {
 
     await page.getByTestId('holding-row-skeleton').first().waitFor()
     await captureFullPage(page, 'dashboard-loading-desktop')
+  })
+
+  /**
+   * The confidence rating is the headline change to this panel, so both ends
+   * of the scale are captured with their evidence open — a high-confidence
+   * call on full data, and the same panel when the grounding data is thin.
+   */
+  test('captures a high-confidence recommendation card', async ({ page }) => {
+    await page.goto('/')
+
+    const card = page.locator('[data-testid="recommendation-card"][data-symbol="BTC"]')
+    await card.waitFor()
+    await expect(card.getByTestId('confidence-badge')).toHaveAttribute('data-value', 'high')
+
+    await card.getByTestId('supporting-facts-toggle').click()
+    await expect(card.getByTestId('supporting-facts')).toBeVisible()
+
+    await captureElement(card, 'recommendation-card-high-confidence')
+  })
+
+  test('captures a low-confidence recommendation card', async ({ page, context }) => {
+    await useScenario(context, Scenario.partialData)
+    await page.goto('/')
+
+    const card = page.locator('[data-testid="recommendation-card"][data-symbol="BTC"]')
+    await card.waitFor()
+    await expect(card.getByTestId('confidence-badge')).toHaveAttribute('data-value', 'low')
+
+    await card.getByTestId('supporting-facts-toggle').click()
+    await expect(card.getByTestId('supporting-facts')).toBeVisible()
+
+    await captureElement(card, 'recommendation-card-low-confidence')
+  })
+
+  test('captures the full analysis panel', async ({ page }) => {
+    await page.goto('/')
+    await page.getByTestId('recommendations-content').waitFor()
+
+    // An element screenshot scrolls its target into view, which parks it under
+    // the sticky header. Unpin the header so the panel's own title is visible.
+    await page.addStyleTag({ content: 'header { position: static !important; }' })
+
+    await captureElement(
+      page.locator('section[aria-labelledby="recommendations-heading"]'),
+      'recommendations-panel-desktop',
+    )
   })
 
   test('captures dark mode', async ({ page }) => {

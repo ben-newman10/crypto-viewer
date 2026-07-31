@@ -39,8 +39,79 @@ export interface Candle {
   volume: string
 }
 
+/** Direction of a call. */
+export type RecommendationAction = 'buy' | 'sell' | 'hold'
+
+/** Confidence rating, tied to the rubric documented in the backend. */
+export type Confidence = 'low' | 'medium' | 'high'
+
+/**
+ * One claim behind a call, already verified server-side against the grounding
+ * data. `value` is always the measured value: when the model quoted something
+ * else it is corrected here, `verified` is false and `model_stated_value`
+ * records what it actually said.
+ */
+export interface SupportingFact {
+  /** Field name in the grounding context, e.g. `BTC.rsi_14`. */
+  metric: string
+  label: string
+  value: string
+  unit: string
+  interpretation: string
+  verified: boolean
+  model_stated_value: string | null
+}
+
+export interface AssetRecommendation {
+  symbol: string
+  recommendation: RecommendationAction
+  confidence: Confidence
+  confidence_rationale: string
+  /** What the model rated itself before the server applied the data ceiling. */
+  model_confidence: Confidence
+  /** Highest rating the available data can support, whatever the model said. */
+  confidence_ceiling: Confidence
+  ceiling_reason: string
+  supporting_facts: SupportingFact[]
+  risks_or_caveats: string[]
+  /** 0-1 share of the intended grounding fields that were available. */
+  data_completeness: number
+  categories_available: string[]
+  categories_missing: string[]
+  verification_note: string | null
+}
+
+export interface GroundednessViolation {
+  symbol: string
+  metric: string
+  kind: string
+  detail: string
+  model_value: string | null
+  context_value: string | null
+}
+
+export interface GroundednessReport {
+  status: 'verified' | 'corrected'
+  facts_checked: number
+  facts_dropped: number
+  facts_corrected: number
+  retried: boolean
+  confidence_downgraded: boolean
+  violations: GroundednessViolation[]
+}
+
 export interface RecommendationResponse {
-  recommendations: string
+  /** `empty` and `unavailable` carry a `message` instead of recommendations. */
+  status: 'ok' | 'empty' | 'unavailable'
+  message: string | null
+  generated_at: string
+  quote_currency: string
+  summary: string
+  recommendations: AssetRecommendation[]
+  /** Injected by the server after the model call; never model-generated. */
+  disclaimer: string
+  groundedness: GroundednessReport
+  sources: Record<string, string>
 }
 
 /** Error carrying the HTTP status so the UI can distinguish failure kinds. */
