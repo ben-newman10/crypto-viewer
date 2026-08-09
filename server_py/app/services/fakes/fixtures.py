@@ -15,9 +15,14 @@ from typing import Any, Dict, List
 # A realistic mixed portfolio: three crypto holdings plus a fiat cash balance.
 # The fiat entry exists on purpose -- the real Coinbase account listing includes
 # it, and it exercises the frontend's "cash, not a tradeable pair" branch.
+#
+# ETH is deliberately fully staked (available 0, balance non-zero). Staked funds
+# are absent from the /accounts endpoint entirely and only surface via
+# get_portfolio_breakdown, so this shape guards the regression where a wholly
+# staked holding vanished from the portfolio. `balance` includes staked funds.
 PORTFOLIO: List[Dict[str, str]] = [
     {"currency": "BTC", "balance": "0.45230000", "available": "0.45230000"},
-    {"currency": "ETH", "balance": "3.21450000", "available": "3.00000000"},
+    {"currency": "ETH", "balance": "3.21450000", "available": "0.00000000"},
     {"currency": "SOL", "balance": "42.50000000", "available": "42.50000000"},
     {"currency": "GBP", "balance": "1250.75", "available": "1250.75"},
 ]

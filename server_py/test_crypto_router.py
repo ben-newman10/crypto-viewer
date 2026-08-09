@@ -9,7 +9,14 @@ client = TestClient(app)
 def test_get_portfolio():
     response = client.get("/api/crypto/portfolio")
     assert response.status_code == 200
-    assert isinstance(response.json(), list)
+    holdings = response.json()
+    assert isinstance(holdings, list)
+    # Assert non-empty: an empty list would otherwise pass this test even if the
+    # service dropped every holding, which is exactly how the staked-balance bug
+    # went unnoticed.
+    assert holdings
+    for holding in holdings:
+        assert {"currency", "balance", "available"} <= holding.keys()
 
 def test_get_price():
     response = client.get("/api/crypto/price/BTC-GBP")
