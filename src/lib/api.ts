@@ -58,6 +58,12 @@ export interface SupportingFact {
   value: string
   unit: string
   interpretation: string
+  /**
+   * Plain-English definition of what the metric measures, authored server-side
+   * in the metric catalogue rather than by the model. Empty string when the
+   * backend has no definition for the field.
+   */
+  plain: string
   verified: boolean
   model_stated_value: string | null
 }

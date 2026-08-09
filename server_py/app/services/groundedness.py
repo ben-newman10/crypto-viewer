@@ -106,6 +106,7 @@ def _verified_fact(metric: Metric, fact: ModelSupportingFact) -> SupportingFact:
         value=metric.rendered(),
         unit=metric.unit,
         interpretation=fact.interpretation,
+        plain=metric.plain,
         verified=True,
     )
 

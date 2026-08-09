@@ -80,6 +80,9 @@ npm run dev          # Starts both frontend and backend concurrently
 - `indicators.py`: RSI, MACD, SMAs, crossover state, volatility, drawdown. Pure functions,
   returning `None` rather than an approximation when the series is too short
 - `context_builder.py`: assembles the typed grounding context from the above
+- `schemas/metric_catalog.py`: the single source of every metric's label, category, unit and
+  plain-English definition, keyed on the field suffix (`rsi_14`, `total_value`). `spec_for()`
+  raises on an unknown field, so a new metric cannot ship without a definition
 - `ai_service.py`: the OpenAI call — structured outputs, `temperature=0.25`, validated reply
 - `groundedness.py`: verifies every model claim against the context
 - `recommendation_service.py`: orchestrates the whole run and injects the disclaimer
@@ -117,6 +120,19 @@ npm run dev          # Starts both frontend and backend concurrently
 - The disclaimer (`config.DISCLAIMER`) is injected server-side. Never ask the model for it.
 - A supporting fact whose value the model misquoted is served with the **measured** value and
   `verified: false`; one citing an unknown or unavailable field is dropped entirely.
+- **Definitions come from code, observations come from the model.** What a metric *is* lives in
+  `metric_catalog.py` (`plain`) and is never asked of the model — a definition is a fixed fact,
+  so it must not vary run to run or be capable of being got wrong. The model only says what
+  today's value suggests. `plain` is deliberately not rendered into the prompt: it costs no
+  tokens and the model cannot contradict it.
+- **The prose is written for a novice.** The system prompt's audience section bans field names
+  (`BTC.rsi_14`) from `summary`, `confidence_rationale`, `interpretation` and `risks_or_caveats`,
+  and requires a gloss beside any term of art. Reader-facing copy the *server* writes
+  (`ceiling_reason`, `verification_note`) follows the same rule; `CONFIDENCE_RUBRIC` does not —
+  it is model-facing only, and stays precise so the self-rating keeps its meaning.
+- Signal categories are stored and served as snake_case machine values. Display names live in
+  `CATEGORY_LABELS` (`grounding.py`) and `components/recommendations/categories.ts` — keep
+  those two in step.
 
 **Environment Setup:**
 - Backend requires `.env` file in `server_py/` with `COINBASE_API_KEY` and `COINBASE_API_SECRET`
@@ -151,6 +167,8 @@ Backend tests use pytest and cover:
 - Technical indicators, including their refusal to compute on short series (`test_indicators.py`)
 - Grounding context assembly and graceful degradation (`test_context_builder.py`)
 - Groundedness verification and the confidence rubric (`test_groundedness.py`)
+- The metric catalogue: every metric has a definition, no definition gives advice, and a field is
+  labelled the same whether or not its data arrived (`test_metric_catalog.py`)
 - API router endpoints (`test_crypto_router.py`, `test_recommendations_router.py`)
 
 Run tests with: `cd server_py && pytest`

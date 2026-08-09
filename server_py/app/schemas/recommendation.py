@@ -73,6 +73,10 @@ class SupportingFact(BaseModel):
     value: str
     unit: str = ""
     interpretation: str
+    #: What this metric measures, in plain words, from the metric catalogue.
+    #: Written in code rather than by the model: a definition is a fixed fact
+    #: about the metric, so it should not vary between runs.
+    plain: str = ""
     verified: bool = True
     #: Set when the model quoted something other than the context value.
     model_stated_value: Optional[str] = None

@@ -121,8 +121,9 @@ test.describe('Confidence rating', () => {
 
     const capped = btc.getByTestId('confidence-capped')
     await expect(capped).toBeVisible()
-    await expect(capped).toContainText('Lowered from high')
-    await expect(capped).toContainText('sentiment')
+    await expect(capped).toContainText('The model rated this high')
+    // Named in words rather than by the payload's snake_case category key.
+    await expect(capped).toContainText('market mood')
 
     const payload = await readPayload(page)
     const record = payload.recommendations.find((item: { symbol: string }) => item.symbol === 'BTC')
@@ -143,7 +144,7 @@ test.describe('Confidence rating', () => {
     }
 
     // And the reason is on the page, not just in the payload.
-    await expect(card(page, 'BTC').getByTestId('confidence-capped')).toContainText('trend')
+    await expect(card(page, 'BTC').getByTestId('confidence-capped')).toContainText('price trend')
 
     const payload = await readPayload(page)
     for (const record of payload.recommendations) {
@@ -195,6 +196,52 @@ test.describe('Supporting facts', () => {
       await expect(row).toContainText(fact.metric)
       await expect(row.getByTestId('fact-value')).toHaveText(fact.value)
     }
+  })
+
+  test('explain what each figure means, behind a second disclosure', async ({ page }) => {
+    // A reader who does not know what RSI is cannot judge a call built on it.
+    // The definition is authored server-side, so it is present on every fact.
+    await page.goto('/')
+    await card(page, 'BTC').getByTestId('supporting-facts-toggle').click()
+
+    const payload = await readPayload(page)
+    const btc = payload.recommendations.find((item: { symbol: string }) => item.symbol === 'BTC')
+    for (const fact of btc.supporting_facts) {
+      expect(fact.plain, `${fact.metric} has no plain-English definition`).toBeTruthy()
+    }
+
+    const row = card(page, 'BTC').locator(`[data-metric="${btc.supporting_facts[0].metric}"]`)
+    const toggle = row.getByTestId('fact-definition-toggle')
+
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(row.getByTestId('fact-definition')).toBeHidden()
+
+    await toggle.click()
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    await expect(row.getByTestId('fact-definition')).toBeVisible()
+    await expect(row.getByTestId('fact-definition')).toContainText(btc.supporting_facts[0].plain)
+  })
+
+  test('definitions are operable by keyboard and named individually', async ({ page }) => {
+    await page.goto('/')
+    const btc = card(page, 'BTC')
+    await btc.getByTestId('supporting-facts-toggle').click()
+
+    const payload = await readPayload(page)
+    const record = payload.recommendations.find(
+      (item: { symbol: string }) => item.symbol === 'BTC',
+    )
+    const first = record.supporting_facts[0]
+    const row = btc.locator(`[data-metric="${first.metric}"]`)
+    const toggle = row.getByTestId('fact-definition-toggle')
+
+    // The visible label is identical on every row, so the accessible name has
+    // to say which figure it belongs to.
+    await expect(toggle).toHaveAccessibleName(`What is ${first.label}?`)
+
+    await toggle.focus()
+    await page.keyboard.press('Enter')
+    await expect(row.getByTestId('fact-definition')).toBeVisible()
   })
 
   test('cite fields that exist in the grounding data', async ({ page }) => {

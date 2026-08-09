@@ -16,6 +16,7 @@ import { Box, Button, Flex, List, ListItem, Text } from '@chakra-ui/react'
 import { useId, useState } from 'react'
 
 import type { SupportingFact } from '../../lib/api'
+import FactDefinition from './FactDefinition'
 
 export interface SupportingFactsProps {
   symbol: string
@@ -95,6 +96,8 @@ export function SupportingFacts({ symbol, facts }: SupportingFactsProps) {
               <Text fontSize="sm" color="fg.muted" mt={1}>
                 {fact.interpretation}
               </Text>
+
+              <FactDefinition plain={fact.plain} label={fact.label} />
 
               {!fact.verified && (
                 // The value above is the measured one; this flags that the

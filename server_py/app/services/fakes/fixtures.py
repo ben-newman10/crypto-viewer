@@ -257,9 +257,9 @@ FAKE_CALLS: Dict[str, Dict[str, str]] = {
 }
 
 FAKE_SUMMARY = (
-    "The portfolio is concentrated in three large-cap assets alongside a cash "
-    "balance. The available technical signals point in different directions "
-    "across the three holdings, so each is assessed on its own evidence below."
+    "Nearly everything you hold sits in three of the largest coins, with some "
+    "cash alongside it. The measures we could work out disagree with each other "
+    "across those three, so each one is looked at on its own below."
 )
 
 

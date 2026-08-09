@@ -262,3 +262,36 @@ async def test_the_feature_flag_and_a_missing_key_both_short_circuit_the_call():
     unconfigured = _service(None)
     with pytest.raises(AIUnavailableError):
         await unconfigured.generate(await context_for())
+
+
+def test_the_system_prompt_asks_for_language_a_beginner_can_follow():
+    """
+    The grounding rules make the numbers trustworthy; they do nothing to make
+    the prose readable. Both are requirements of the prompt.
+    """
+    prompt = ai_service_module.SYSTEM_PROMPT
+    assert "never traded" in prompt
+    # The specific failure that prompted this: field names quoted at the reader.
+    assert "Never put a field name" in prompt
+    # And the grounding rules must still be in force alongside it.
+    assert CONFIDENCE_RUBRIC in prompt
+    assert "Rules 1-6 bind you exactly as before" in prompt
+
+
+def test_the_schema_asks_the_model_for_plain_prose_in_every_free_text_field():
+    """
+    The JSON schema descriptions steer the model as much as the system prompt
+    does, so the audience requirement has to be repeated in them.
+    """
+    schema = ai_service_module.RESPONSE_FORMAT["json_schema"]["schema"]
+    item = schema["properties"]["recommendations"]["items"]["properties"]
+    fact = item["supporting_facts"]["items"]["properties"]
+
+    assert "Plain English" in schema["properties"]["summary"]["description"]
+    assert "plain English" in item["confidence_rationale"]["description"]
+    assert "plain" in fact["interpretation"]["description"]
+    assert "plain" in item["risks_or_caveats"]["description"]
+
+    # The jargon the old rationale wording leaked to the reader.
+    assert "signal category" in item["confidence_rationale"]["description"]
+    assert "do not name fields" in item["confidence_rationale"]["description"]

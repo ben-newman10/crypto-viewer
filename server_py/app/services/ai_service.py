@@ -64,6 +64,37 @@ Confidence rubric -- rate yourself against this exactly:
 
 {CONFIDENCE_RUBRIC}
 
+Who you are writing for:
+
+The reader has never traded and does not know what RSI, MACD or a moving
+average is. Rules 1-6 bind you exactly as before -- this section governs the
+*wording* of what they already allow, and is never licence to soften, hedge or
+invent.
+
+7. Write the shortest plain sentence that is true. Use no technical term
+   without saying what it means in ordinary words in the same breath. If you
+   write "overbought", "oversold", "bullish", "bearish", "support",
+   "resistance" or "momentum", a short gloss must follow it in the same
+   sentence -- "overbought (buyers have pushed hard and fast)". If a gloss
+   would not fit, choose plainer words instead.
+8. Never put a field name (`BTC.rsi_14`, `market.fear_greed_classification`)
+   inside `summary`, `confidence_rationale`, `interpretation` or
+   `risks_or_caveats`. Name the thing in words -- "the 14-day momentum score",
+   "the market's overall mood". Field names belong only in the `metric` key,
+   where they are the citation.
+9. The app already shows the reader a definition of each metric, so
+   `interpretation` must not explain what the indicator is. Say what this
+   particular value suggests, and do not restate the metric's name back at
+   them.
+10. In `confidence_rationale`, do not use the phrases "signal category" or
+    "data completeness". Say plainly how much of the information you wanted was
+    actually there, and whether the pieces pointed the same way. The grouping
+    names this prompt uses -- trend, momentum, volatility, sentiment, market
+    structure -- are internal vocabulary: describe what they measure instead of
+    naming them.
+11. Write to the reader as "you" when referring to their holdings. Avoid
+    "the subject portfolio" and similar register.
+
 Return one recommendation per asset listed in the context, using the required
 schema. `summary` is two or three sentences about the portfolio as a whole,
 under the same grounding rules.\
@@ -87,7 +118,9 @@ RESPONSE_FORMAT: Dict[str, Any] = {
                     "type": "string",
                     "description": (
                         "Two or three sentences on the portfolio as a whole, "
-                        "grounded in context fields only."
+                        "grounded in context fields only. Plain English for a "
+                        "first-time reader, addressed as 'you'. No field names, "
+                        "no unexplained jargon."
                     ),
                 },
                 "recommendations": {
@@ -117,9 +150,11 @@ RESPONSE_FORMAT: Dict[str, Any] = {
                             "confidence_rationale": {
                                 "type": "string",
                                 "description": (
-                                    "Why this confidence level, referring explicitly to "
-                                    "data completeness and to whether the available "
-                                    "signal categories agree."
+                                    "Why this confidence level, in plain English: how "
+                                    "much of the information you wanted was actually "
+                                    "available, and whether the pieces pointed the same "
+                                    "way. Do not use the phrases 'signal category' or "
+                                    "'data completeness', and do not name fields."
                                 ),
                             },
                             "supporting_facts": {
@@ -146,7 +181,12 @@ RESPONSE_FORMAT: Dict[str, Any] = {
                                         "interpretation": {
                                             "type": "string",
                                             "description": (
-                                                "One sentence on what this value implies."
+                                                "One plain sentence on what this "
+                                                "particular value suggests, for a reader "
+                                                "who has never traded. The app supplies "
+                                                "the definition of the metric "
+                                                "separately, so do not explain what the "
+                                                "indicator is or restate its name."
                                             ),
                                         },
                                     },
@@ -156,8 +196,10 @@ RESPONSE_FORMAT: Dict[str, Any] = {
                                 "type": "array",
                                 "items": {"type": "string"},
                                 "description": (
-                                    "What would invalidate this call, including any "
-                                    "unavailable fields that would have mattered."
+                                    "What would invalidate this call, including anything "
+                                    "missing that would have mattered. One plain "
+                                    "sentence each, no field names, understandable "
+                                    "without any trading background."
                                 ),
                             },
                         },
@@ -297,7 +339,9 @@ class AIService:
                 "content": (
                     f"{render_context(context)}\n\n"
                     "Produce one recommendation per asset above, citing only the field "
-                    "names shown and copying their values exactly."
+                    "names shown and copying their values exactly. Cite field names in "
+                    "the `metric` key only; write every sentence in plain English for a "
+                    "reader who has never traded."
                 ),
             },
         ]
@@ -310,7 +354,9 @@ class AIService:
                 messages=messages,
                 temperature=self.temperature,
                 response_format=RESPONSE_FORMAT,
-                max_tokens=2000,
+                # Plain English is longer than analyst shorthand, and a
+                # multi-asset portfolio produces one full card per holding.
+                max_tokens=3000,
             )
         except Exception as error:  # noqa: BLE001
             logging.error("OpenAI API error: %s", error)

@@ -254,3 +254,78 @@ def test_downgrade_stops_at_low():
     assert downgrade("high") == "medium"
     assert downgrade("medium") == "low"
     assert downgrade("low") == "low"
+
+
+def test_the_plain_definition_travels_with_a_verified_fact():
+    """
+    The definition is authored server-side and attached here, not taken from
+    the model -- so it reaches the UI on every fact the model cites correctly.
+    """
+    metric = Metric(
+        field="BTC.rsi_14",
+        label="RSI (14)",
+        category="momentum",
+        value=54.5,
+        plain="Whether a coin has been bought hard or sold hard lately.",
+    )
+    payload = ModelPayload(
+        summary="",
+        recommendations=[
+            ModelRecommendation(
+                symbol="BTC",
+                recommendation="hold",
+                confidence="low",
+                confidence_rationale="",
+                supporting_facts=[
+                    ModelSupportingFact(
+                        metric="BTC.rsi_14",
+                        value="54.5",
+                        interpretation="Momentum is middling.",
+                    )
+                ],
+            )
+        ],
+    )
+
+    outcome = groundedness.check(payload, _context([metric]))
+    fact = outcome.facts["BTC"][0]
+    assert fact.plain == metric.plain
+    assert fact.verified is True
+
+
+def test_a_corrected_fact_still_carries_its_definition():
+    """
+    A misquoted value is the case where a reader most needs to understand what
+    the figure even is, so the explanation must survive the correction.
+    """
+    metric = Metric(
+        field="BTC.rsi_14",
+        label="RSI (14)",
+        category="momentum",
+        value=54.5,
+        plain="Whether a coin has been bought hard or sold hard lately.",
+    )
+    payload = ModelPayload(
+        summary="",
+        recommendations=[
+            ModelRecommendation(
+                symbol="BTC",
+                recommendation="hold",
+                confidence="high",
+                confidence_rationale="",
+                supporting_facts=[
+                    ModelSupportingFact(
+                        metric="BTC.rsi_14",
+                        value="81.0",  # not what the context holds
+                        interpretation="Momentum looks stretched.",
+                    )
+                ],
+            )
+        ],
+    )
+
+    outcome = groundedness.check(payload, _context([metric]))
+    fact = outcome.facts["BTC"][0]
+    assert fact.verified is False
+    assert fact.value == "54.5"  # the measured value, not the quoted one
+    assert fact.plain == metric.plain

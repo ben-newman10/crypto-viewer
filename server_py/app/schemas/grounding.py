@@ -47,6 +47,10 @@ CATEGORY_VOLATILITY = "volatility"
 CATEGORY_SENTIMENT = "sentiment"
 CATEGORY_MARKET_STRUCTURE = "market_structure"
 CATEGORY_POSITION = "position"
+#: Always-present facts (the current price, how many candles arrived). Citable,
+#: but excluded from the completeness ratio: counting them would inflate the
+#: score for an asset whose actual signals are all missing.
+CATEGORY_REFERENCE = "reference"
 
 SIGNAL_CATEGORIES: List[str] = [
     CATEGORY_TREND,
@@ -55,6 +59,23 @@ SIGNAL_CATEGORIES: List[str] = [
     CATEGORY_SENTIMENT,
     CATEGORY_MARKET_STRUCTURE,
 ]
+
+#: How a category is named to a reader. The stored values stay snake_case
+#: because the API serves them as machine values; these are for prose only.
+CATEGORY_LABELS: Dict[str, str] = {
+    CATEGORY_TREND: "price trend",
+    CATEGORY_MOMENTUM: "momentum",
+    CATEGORY_VOLATILITY: "price swings",
+    CATEGORY_SENTIMENT: "market mood",
+    CATEGORY_MARKET_STRUCTURE: "market size",
+    CATEGORY_POSITION: "your holding",
+    CATEGORY_REFERENCE: "reference data",
+}
+
+
+def category_label(category: str) -> str:
+    """Reader-facing name for a signal category, falling back to the raw value."""
+    return CATEGORY_LABELS.get(category, category.replace("_", " "))
 
 
 class Metric(BaseModel):
@@ -77,6 +98,13 @@ class Metric(BaseModel):
     note: Optional[str] = Field(
         None,
         description="How it was computed, or why it is unavailable.",
+    )
+    #: Novice-facing definition of what this metric measures, from the metric
+    #: catalogue. Distinct from ``note``, which is about *this* run -- the
+    #: method used, or the reason the value is missing. Never sent to the model.
+    plain: str = Field(
+        "",
+        description="What this measures, in words a first-time reader can follow.",
     )
 
     @property
@@ -207,26 +235,31 @@ def confidence_ceiling(completeness: DataCompleteness) -> Tuple[str, str]:
     or not the model complies.
     """
     category_count = len(completeness.categories_available)
+    reason = _ceiling_reason(category_count, completeness.ratio)
 
     if category_count < MEDIUM_MIN_CATEGORIES or completeness.ratio < MEDIUM_COMPLETENESS:
-        return (
-            "low",
-            f"only {category_count} signal "
-            f"{'category' if category_count == 1 else 'categories'} available and "
-            f"{completeness.ratio:.0%} of grounding data present",
-        )
+        return "low", reason
 
     if category_count < HIGH_MIN_CATEGORIES or completeness.ratio < HIGH_COMPLETENESS:
-        return (
-            "medium",
-            f"{category_count} signal categories available and "
-            f"{completeness.ratio:.0%} of grounding data present",
-        )
+        return "medium", reason
 
+    return "high", reason
+
+
+def _ceiling_reason(category_count: int, ratio: float) -> str:
+    """
+    The ceiling explained to a reader rather than to an analyst.
+
+    "3 signal categories available and 85% of grounding data present" is
+    accurate but means nothing to someone who has not read the rubric, so it is
+    phrased as a fraction of what the app looks for and what actually arrived.
+    """
+    total = len(SIGNAL_CATEGORIES)
+    was_were = "was" if category_count == 1 else "were"
+    only = "only " if category_count < total else ""
     return (
-        "high",
-        f"{category_count} signal categories available and "
-        f"{completeness.ratio:.0%} of grounding data present",
+        f"{only}{category_count} of the {total} kinds of signal we look at "
+        f"{was_were} available, and {ratio:.0%} of the data we wanted arrived"
     )
 
 

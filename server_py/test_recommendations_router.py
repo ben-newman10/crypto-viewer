@@ -186,7 +186,13 @@ def test_the_invented_field_is_dropped_rather_than_shown_unverified():
 def test_a_downgraded_call_explains_why():
     btc = by_symbol(get(scenarios.UNGROUNDED_AI).json(), "BTC")
     assert btc["confidence"] == "medium"  # high, downgraded one step
-    assert btc["verification_note"] and "corrected" in btc["verification_note"]
+
+    note = btc["verification_note"]
+    assert note
+    # Says both halves of what happened -- the model misquoted a figure, and
+    # that is why this call is rated lower -- without pinning the exact phrasing.
+    assert "did not match" in note
+    assert "lowered" in note
 
 
 # --- failure modes ----------------------------------------------------------

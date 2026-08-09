@@ -26,6 +26,7 @@ from ..schemas.grounding import (
     confidence_ceiling,
     summarise_completeness,
 )
+from ..schemas.metric_catalog import spec_for
 from . import indicators
 
 #: Balances held as cash rather than as a tradeable pair. Mirrors the
@@ -37,52 +38,57 @@ FIAT_CURRENCIES = {"GBP", "USD", "EUR"}
 CANDLE_GRANULARITY_SECONDS = 86400
 CANDLE_LIMIT = 300
 
-# Non-scored categories. They are citable but excluded from the completeness
-# ratio: balances and the current price are always present, so counting them
-# would inflate completeness for an asset whose actual signals are missing.
-CATEGORY_REFERENCE = "reference"
-CATEGORY_POSITION = "position"
-
 
 def _available(
     field: str,
-    label: str,
-    category: str,
     value: Optional[float] = None,
     text: Optional[str] = None,
-    unit: str = "",
     note: Optional[str] = None,
+    quote_currency: str = "",
 ) -> Metric:
-    """A metric that was computed, or an unavailable one when the value is None."""
+    """
+    A metric that was computed, or an unavailable one when the value is None.
+
+    Name, category and unit come from the metric catalogue rather than the call
+    site, so the same field cannot end up labelled two different ways depending
+    on which branch built it.
+    """
+    spec = spec_for(field)
+    unit = quote_currency if spec.quote_unit else spec.unit
+
     if value is None and text is None:
         return Metric(
             field=field,
-            label=label,
-            category=category,
+            label=spec.label,
+            category=spec.category,
             status="unavailable",
             unit=unit,
             note=note or "not available for this asset",
+            plain=spec.plain,
         )
     return Metric(
         field=field,
-        label=label,
-        category=category,
+        label=spec.label,
+        category=spec.category,
         status="available",
         value=None if value is None else round(value, 6),
         text=text,
         unit=unit,
         note=note,
+        plain=spec.plain,
     )
 
 
-def _unavailable(field: str, label: str, category: str, reason: str, unit: str = "") -> Metric:
+def _unavailable(field: str, reason: str, quote_currency: str = "") -> Metric:
+    spec = spec_for(field)
     return Metric(
         field=field,
-        label=label,
-        category=category,
+        label=spec.label,
+        category=spec.category,
         status="unavailable",
-        unit=unit,
+        unit=quote_currency if spec.quote_unit else spec.unit,
         note=reason,
+        plain=spec.plain,
     )
 
 
@@ -103,7 +109,27 @@ def _closes_oldest_first(candles: Sequence[Dict[str, Any]]) -> List[float]:
     return closes
 
 
-def _indicator_metrics(symbol: str, closes: List[float], reason: Optional[str]) -> List[Metric]:
+#: Every technical field, in the order they are emitted. Used by the
+#: candle-failure branch so it cannot fall out of step with the happy path.
+INDICATOR_FIELDS: List[str] = [
+    "rsi_14",
+    "macd_line",
+    "macd_signal",
+    "macd_histogram",
+    "sma_50",
+    "sma_200",
+    "ma_cross_state",
+    "volatility_30d_annualised_pct",
+    "distance_from_period_high_pct",
+]
+
+
+def _indicator_metrics(
+    symbol: str,
+    closes: List[float],
+    reason: Optional[str],
+    quote_currency: str = "",
+) -> List[Metric]:
     """
     Every technical metric for one asset.
 
@@ -116,27 +142,8 @@ def _indicator_metrics(symbol: str, closes: List[float], reason: Optional[str]) 
     """
     if reason is not None:
         return [
-            _unavailable(f"{symbol}.rsi_14", "RSI (14)", "momentum", reason),
-            _unavailable(f"{symbol}.macd_line", "MACD line", "momentum", reason),
-            _unavailable(f"{symbol}.macd_signal", "MACD signal", "momentum", reason),
-            _unavailable(f"{symbol}.macd_histogram", "MACD histogram", "momentum", reason),
-            _unavailable(f"{symbol}.sma_50", "50-day moving average", "trend", reason, "GBP"),
-            _unavailable(f"{symbol}.sma_200", "200-day moving average", "trend", reason, "GBP"),
-            _unavailable(f"{symbol}.ma_cross_state", "50/200 crossover state", "trend", reason),
-            _unavailable(
-                f"{symbol}.volatility_30d_annualised_pct",
-                "30-day annualised volatility",
-                "volatility",
-                reason,
-                "%",
-            ),
-            _unavailable(
-                f"{symbol}.distance_from_period_high_pct",
-                "Distance from 300-day high",
-                "volatility",
-                reason,
-                "%",
-            ),
+            _unavailable(f"{symbol}.{field}", reason, quote_currency)
+            for field in INDICATOR_FIELDS
         ]
 
     bars = len(closes)
@@ -155,8 +162,6 @@ def _indicator_metrics(symbol: str, closes: List[float], reason: Optional[str]) 
     metrics.append(
         _available(
             f"{symbol}.rsi_14",
-            "RSI (14)",
-            "momentum",
             value=rsi_value,
             note=(
                 "Wilder RSI over daily closes; above 70 is conventionally overbought, "
@@ -175,8 +180,6 @@ def _indicator_metrics(symbol: str, closes: List[float], reason: Optional[str]) 
     metrics.append(
         _available(
             f"{symbol}.macd_line",
-            "MACD line",
-            "momentum",
             value=macd_result.line if macd_result else None,
             note=macd_note,
         )
@@ -184,8 +187,6 @@ def _indicator_metrics(symbol: str, closes: List[float], reason: Optional[str]) 
     metrics.append(
         _available(
             f"{symbol}.macd_signal",
-            "MACD signal",
-            "momentum",
             value=macd_result.signal if macd_result else None,
             note=macd_note,
         )
@@ -193,8 +194,6 @@ def _indicator_metrics(symbol: str, closes: List[float], reason: Optional[str]) 
     metrics.append(
         _available(
             f"{symbol}.macd_histogram",
-            "MACD histogram",
-            "momentum",
             value=macd_result.histogram if macd_result else None,
             note=(
                 "MACD line minus signal line; positive means bullish momentum"
@@ -207,28 +206,22 @@ def _indicator_metrics(symbol: str, closes: List[float], reason: Optional[str]) 
     metrics.append(
         _available(
             f"{symbol}.sma_50",
-            "50-day moving average",
-            "trend",
             value=sma_50,
-            unit="GBP",
+            quote_currency=quote_currency,
             note=None if sma_50 is not None else f"needs 50 daily closes, {short}",
         )
     )
     metrics.append(
         _available(
             f"{symbol}.sma_200",
-            "200-day moving average",
-            "trend",
             value=sma_200,
-            unit="GBP",
+            quote_currency=quote_currency,
             note=None if sma_200 is not None else f"needs 200 daily closes, {short}",
         )
     )
     metrics.append(
         _available(
             f"{symbol}.ma_cross_state",
-            "50/200 crossover state",
-            "trend",
             text=cross,
             note=(
                 "golden_cross / death_cross mean the 50-day crossed the 200-day within "
@@ -243,10 +236,7 @@ def _indicator_metrics(symbol: str, closes: List[float], reason: Optional[str]) 
     metrics.append(
         _available(
             f"{symbol}.volatility_30d_annualised_pct",
-            "30-day annualised volatility",
-            "volatility",
             value=volatility,
-            unit="%",
             note=(
                 "standard deviation of the last 30 daily returns, annualised"
                 if volatility is not None
@@ -257,10 +247,7 @@ def _indicator_metrics(symbol: str, closes: List[float], reason: Optional[str]) 
     metrics.append(
         _available(
             f"{symbol}.distance_from_period_high_pct",
-            f"Distance from {bars}-day high",
-            "volatility",
             value=drawdown,
-            unit="%",
             note=(
                 f"against the highest close in the {bars} daily candles held; this is a "
                 "period high, not an all-time high"
@@ -439,40 +426,23 @@ class ContextBuilder:
         metrics = [
             _available(
                 "portfolio.total_value",
-                "Portfolio value",
-                CATEGORY_POSITION,
                 value=total_value,
-                unit=quote_currency,
+                quote_currency=quote_currency,
                 note="crypto holdings valued at the current price, plus cash",
             ),
             _available(
                 "portfolio.cash_value",
-                "Cash balance",
-                CATEGORY_POSITION,
                 value=cash_value,
-                unit=quote_currency,
+                quote_currency=quote_currency,
             ),
-            _available(
-                "portfolio.cash_weight_pct",
-                "Cash as share of portfolio",
-                CATEGORY_POSITION,
-                value=cash_weight,
-                unit="%",
-            ),
-            _available(
-                "portfolio.asset_count",
-                "Number of crypto holdings",
-                CATEGORY_POSITION,
-                value=float(asset_count),
-            ),
+            _available("portfolio.cash_weight_pct", value=cash_weight),
+            _available("portfolio.asset_count", value=float(asset_count)),
         ]
 
         if fear_greed is not None:
             metrics.append(
                 _available(
                     "market.fear_greed_index",
-                    "Fear & Greed Index",
-                    "sentiment",
                     value=fear_greed.value,
                     note="alternative.me, 0 = extreme fear, 100 = extreme greed",
                 )
@@ -480,24 +450,13 @@ class ContextBuilder:
             metrics.append(
                 _available(
                     "market.fear_greed_classification",
-                    "Fear & Greed classification",
-                    "sentiment",
                     text=fear_greed.classification,
                 )
             )
         else:
             reason = "sentiment source did not respond"
-            metrics.append(
-                _unavailable("market.fear_greed_index", "Fear & Greed Index", "sentiment", reason)
-            )
-            metrics.append(
-                _unavailable(
-                    "market.fear_greed_classification",
-                    "Fear & Greed classification",
-                    "sentiment",
-                    reason,
-                )
-            )
+            metrics.append(_unavailable("market.fear_greed_index", reason))
+            metrics.append(_unavailable("market.fear_greed_classification", reason))
 
         return metrics
 
@@ -521,37 +480,23 @@ class ContextBuilder:
         metrics: List[Metric] = [
             _available(
                 f"{symbol}.price",
-                "Current price",
-                CATEGORY_REFERENCE,
                 value=fetched["price"],
-                unit=quote_currency,
+                quote_currency=quote_currency,
                 note=price_error,
             ),
-            _available(
-                f"{symbol}.balance",
-                "Units held",
-                CATEGORY_POSITION,
-                value=balance,
-            ),
+            _available(f"{symbol}.balance", value=balance),
             _available(
                 f"{symbol}.holding_value",
-                "Value of holding",
-                CATEGORY_POSITION,
                 value=value,
-                unit=quote_currency,
+                quote_currency=quote_currency,
                 note=None if value is not None else "needs both a balance and a price",
             ),
             _available(
                 f"{symbol}.portfolio_weight_pct",
-                "Share of portfolio",
-                CATEGORY_POSITION,
                 value=(value / total_value * 100) if (value and total_value) else None,
-                unit="%",
             ),
             _available(
                 f"{symbol}.candles_available",
-                "Daily candles used",
-                CATEGORY_REFERENCE,
                 value=float(len(closes)),
                 note=f"a {CANDLE_LIMIT}-candle daily series was requested",
             ),
@@ -562,25 +507,20 @@ class ContextBuilder:
         metrics.append(
             _available(
                 f"{symbol}.change_24h_pct",
-                "24h change",
-                "momentum",
                 value=fetched["change_24h"],
-                unit="%",
                 note=price_error,
             )
         )
 
-        metrics.extend(_indicator_metrics(symbol, closes, candle_error))
+        metrics.extend(_indicator_metrics(symbol, closes, candle_error, quote_currency))
 
         period_high = indicators.period_high(closes)
         metrics.append(
             _available(
                 f"{symbol}.period_high",
-                f"Highest close in the last {len(closes)} days",
-                CATEGORY_REFERENCE,
                 value=period_high,
-                unit=quote_currency,
-                note=candle_error,
+                quote_currency=quote_currency,
+                note=candle_error or f"the highest daily close in the {len(closes)} days held",
             )
         )
 
@@ -604,46 +544,26 @@ class ContextBuilder:
         if stats is None:
             reason = "no market-structure data for this asset"
             return [
-                _unavailable(
-                    f"{symbol}.market_cap", "Market cap", "market_structure", reason, quote_currency
-                ),
-                _unavailable(
-                    f"{symbol}.circulating_supply",
-                    "Circulating supply",
-                    "market_structure",
-                    reason,
-                ),
-                _unavailable(
-                    f"{symbol}.ath_change_pct",
-                    "Distance from all-time high",
-                    "market_structure",
-                    reason,
-                    "%",
-                ),
+                _unavailable(f"{symbol}.market_cap", reason, quote_currency),
+                _unavailable(f"{symbol}.circulating_supply", reason),
+                _unavailable(f"{symbol}.ath_change_pct", reason),
             ]
 
         return [
             _available(
                 f"{symbol}.market_cap",
-                "Market cap",
-                "market_structure",
                 value=stats.market_cap,
-                unit=quote_currency,
+                quote_currency=quote_currency,
                 note="CoinGecko",
             ),
             _available(
                 f"{symbol}.circulating_supply",
-                "Circulating supply",
-                "market_structure",
                 value=stats.circulating_supply,
                 note="CoinGecko",
             ),
             _available(
                 f"{symbol}.ath_change_pct",
-                "Distance from all-time high",
-                "market_structure",
                 value=stats.ath_change_pct,
-                unit="%",
                 note="CoinGecko; against the all-time high in the quote currency",
             ),
         ]

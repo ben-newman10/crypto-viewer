@@ -33,6 +33,12 @@ export default defineConfig({
     // Pinned so currency formatting and date labels are deterministic.
     locale: 'en-GB',
     timezoneId: 'UTC',
+    // Escape hatch for running the suite against a Chrome already on the
+    // machine, when `npx playwright install` cannot fetch its pinned build.
+    // Unset by default, so CI and a normal checkout are unaffected.
+    ...(process.env.E2E_CHROME_PATH
+      ? { launchOptions: { executablePath: process.env.E2E_CHROME_PATH } }
+      : {}),
   },
 
   projects: [

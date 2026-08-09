@@ -13,6 +13,7 @@ import { Box, Divider, HStack, List, ListItem, Text, VisuallyHidden } from '@cha
 import type { AssetRecommendation } from '../../lib/api'
 import AssetBadge from '../common/AssetBadge'
 import { ActionBadge, ConfidenceBadge } from './badges'
+import { categoryLabels } from './categories'
 import SupportingFacts from './SupportingFacts'
 
 export interface RecommendationCardProps {
@@ -64,8 +65,9 @@ export function RecommendationCard({ recommendation }: RecommendationCardProps) 
 
       {wasCapped && (
         <Text mt={2} fontSize="xs" color="fg.muted" data-testid="confidence-capped">
-          Lowered from {modelConfidence}: the ceiling for this pass is {ceiling} — {ceilingReason}.
-          {missing.length > 0 && ` Missing: ${missing.join(', ')}.`}
+          The model rated this {modelConfidence}; we lowered it to {ceiling}, because{' '}
+          {ceilingReason}.
+          {missing.length > 0 && ` We had nothing on: ${categoryLabels(missing).join(', ')}.`}
         </Text>
       )}
 

@@ -15,7 +15,12 @@ the context, actually gets caught by it.
 import asyncio
 from typing import List, Optional
 
-from ...schemas.grounding import AssetContext, Metric, RecommendationContext
+from ...schemas.grounding import (
+    AssetContext,
+    Metric,
+    RecommendationContext,
+    category_label,
+)
 from ...schemas.recommendation import ModelPayload, ModelRecommendation, ModelSupportingFact
 from ..ai_errors import AIUnavailableError
 from . import fixtures, scenarios
@@ -28,6 +33,21 @@ _FACT_PRIORITY = ["trend", "momentum", "volatility", "sentiment", "market_struct
 
 #: How many supporting facts the fake cites per asset.
 _FACTS_PER_ASSET = 4
+
+
+def _plain_interpretation(metric: Metric, symbol: str) -> str:
+    """
+    A stand-in for the model's own sentence about one figure.
+
+    Written in the register the real prompt now asks for -- plain, addressed to
+    a reader with no trading background, and naming the metric in words rather
+    than by its field id -- so the E2E suite renders text shaped like what
+    production actually serves.
+    """
+    return (
+        f"This is what the {category_label(metric.category)} reading for {symbol} "
+        "looks like at the moment."
+    )
 
 
 class FakeAIService:
@@ -82,20 +102,24 @@ class FakeAIService:
         facts = self._facts(asset, shared, ungrounded=ungrounded)
 
         missing = asset.completeness.categories_missing
+        available_count = len(asset.completeness.categories_available)
         rationale = (
-            f"{call['confidence']}: {len(asset.completeness.categories_available)} signal "
-            f"categories available at {asset.completeness.ratio:.0%} data completeness"
+            f"We had {available_count} of the kinds of information we look for, and "
+            f"{asset.completeness.ratio:.0%} of the readings we wanted came through"
         )
         if missing:
-            rationale += f"; no {' or '.join(missing)} data this pass"
+            plain_missing = [category_label(category) for category in missing]
+            rationale += f", but nothing on {' or '.join(plain_missing)}"
+        rationale += "."
 
         caveats = [
-            "A move outside the recent range would invalidate the trend reading.",
+            "If the price moves outside the range it has held recently, this reading "
+            "no longer applies.",
         ]
         if missing:
             caveats.append(
-                f"Unavailable this pass: {', '.join(missing)}. Those signals could point "
-                "the other way."
+                f"We had no {', '.join(category_label(c) for c in missing)} data this "
+                "time, and it could point the other way."
             )
 
         return ModelRecommendation(
@@ -134,7 +158,7 @@ class FakeAIService:
             ModelSupportingFact(
                 metric=metric.field,
                 value=metric.rendered(),
-                interpretation=f"{metric.label} for {asset.symbol}.",
+                interpretation=_plain_interpretation(metric, asset.symbol),
             )
             for metric in chosen
         ]
@@ -147,7 +171,7 @@ class FakeAIService:
                 facts[0] = ModelSupportingFact(
                     metric=first.field,
                     value=f"{first.value * 1.4:.4f}",
-                    interpretation=f"{first.label} for {asset.symbol}.",
+                    interpretation=_plain_interpretation(first, asset.symbol),
                 )
             facts.append(
                 ModelSupportingFact(

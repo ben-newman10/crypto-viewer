@@ -123,7 +123,7 @@ const Recommendations = () => {
     <SectionCard
       title="AI analysis"
       headingId="recommendations-heading"
-      subtitle="Grounded in your holdings and the market data below — every figure is checked before it is shown."
+      subtitle="A read on each of your holdings, based only on the market data this app fetched. The app works out every figure itself and checks the model quoted it correctly. Open the evidence under any call to see those figures, with an explanation of what each one means."
       actions={
         <Button
           variant="outline"

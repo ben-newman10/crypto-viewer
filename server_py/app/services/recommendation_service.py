@@ -162,9 +162,11 @@ def _assemble(
             # the call built on it, regardless of what it rated itself.
             confidence = downgrade(confidence)
             any_downgrade = True
+            count = len(asset_violations)
             note = (
-                f"{len(asset_violations)} claim(s) did not match the grounding data; "
-                "values were corrected from the context and confidence was lowered."
+                f"The model quoted {count} figure{'' if count == 1 else 's'} that did not "
+                "match what the app measured. The figures below are the app's own, and "
+                "this call's confidence was lowered because of it."
             )
 
         recommendations.append(

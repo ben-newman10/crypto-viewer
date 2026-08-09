@@ -185,3 +185,75 @@ async def test_available_metrics_render_a_value_and_unavailable_ones_say_so():
     context = await build(scenarios.SHORT_HISTORY)
     assert field(context, "BTC.sma_200").rendered() == "unavailable"
     assert field(context, "BTC.price").rendered() == "52341.87"
+
+
+# --- labels and definitions -------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        None,
+        scenarios.SHORT_HISTORY,
+        scenarios.ERROR_MARKET_CONTEXT,
+        scenarios.ERROR_PRICES,
+        scenarios.ERROR_HISTORICAL,
+        scenarios.PARTIAL_DATA,
+    ],
+)
+async def test_every_metric_carries_a_label_and_a_plain_definition(flags):
+    """
+    Including on the degradation paths. An unavailable metric is still shown to
+    a reader, so it still has to be explicable -- and before the catalogue,
+    those branches were written out separately and had already drifted.
+    """
+    context = await build(flags)
+    metrics = list(context.shared_metrics)
+    for asset in context.assets:
+        metrics.extend(asset.metrics)
+
+    for metric in metrics:
+        assert metric.label.strip(), f"{metric.field} has no label"
+        assert metric.plain.strip(), f"{metric.field} has no plain definition"
+
+
+async def test_a_field_is_labelled_the_same_whether_or_not_its_data_arrived():
+    """
+    The regression test for the drift the catalogue was introduced to fix:
+    ``distance_from_period_high_pct`` used to be "Distance from 300-day high"
+    when candles failed and "Distance from {n}-day high" when they did not.
+    """
+    good = await build()
+    broken = await build(scenarios.ERROR_HISTORICAL)
+
+    shared_fields = set(good.metric_index()) & set(broken.metric_index())
+    assert "BTC.distance_from_period_high_pct" in shared_fields
+
+    for name in sorted(shared_fields):
+        assert good.metric_index()[name].label == broken.metric_index()[name].label, (
+            f"{name} is labelled differently depending on whether its data arrived"
+        )
+
+
+async def test_prices_are_labelled_in_the_portfolio_quote_currency():
+    """
+    The moving averages used to hardcode "GBP" while every other price field
+    took the configured quote currency -- fine until the currency changes.
+    """
+    context = await build()
+    quote = context.quote_currency
+    for name in ["BTC.price", "BTC.sma_50", "BTC.sma_200", "BTC.market_cap", "BTC.period_high"]:
+        assert field(context, name).unit == quote, f"{name} is not in {quote}"
+
+
+async def test_the_plain_definition_is_never_sent_to_the_model():
+    """
+    Definitions are for the reader. Rendering them into the prompt would spend
+    tokens on something the model does not need and invite it to argue with
+    them.
+    """
+    from app.services.ai_service import render_context
+
+    context = await build()
+    rendered = render_context(context)
+    assert field(context, "BTC.rsi_14").plain not in rendered
