@@ -3,7 +3,10 @@ Coinbase service module for interacting with the Coinbase Advanced Trade API.
 Handles authentication, data fetching, and formatting of cryptocurrency data.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+import functools
 import os
 from typing import List, Dict, Any
 import json
@@ -17,6 +20,14 @@ class CoinbaseService:
     Service class for interacting with Coinbase Advanced Trade API.
     Handles portfolio data, price information, and historical data retrieval.
     """
+
+    #: Status codes worth a second attempt. Anything else (401/403/404) is a
+    #: permanent answer, and retrying only multiplies the latency of an error.
+    RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+    RETRY_ATTEMPTS = 3
+    RETRY_BASE_DELAY = 0.3
+    #: Coinbase reports crypto amounts to 8 decimal places.
+    AMOUNT_PLACES = Decimal("0.00000001")
 
     def __init__(self):
         """
@@ -87,62 +98,257 @@ class CoinbaseService:
         """
         return f"{base_currency.upper()}-{quote_currency.upper()}"
 
+    async def _call(self, fn, *args, **kwargs) -> Any:
+        """
+        Run a synchronous SDK call off the event loop.
+
+        The Coinbase SDK is built on `requests` and blocks. The frontend polls
+        every 30 seconds and fans out one price request per holding, so calling
+        it inline would stall every other request for the duration.
+        """
+        return await asyncio.to_thread(functools.partial(fn, *args, **kwargs))
+
+    def _is_retryable(self, error: Exception) -> bool:
+        """
+        Decide whether an error is worth another attempt.
+
+        A missing status means the request never got an answer (connection reset,
+        timeout), which is retryable. An explicit status is retryable only if
+        Coinbase is signalling a transient condition.
+        """
+        status = getattr(getattr(error, "response", None), "status_code", None)
+        if status is None:
+            return True
+        return status in self.RETRYABLE_STATUS
+
+    async def _retrying(self, fn, *args, **kwargs) -> Any:
+        """Call `fn` via `_call`, retrying transient failures with backoff."""
+        last_error: Exception | None = None
+
+        for attempt in range(self.RETRY_ATTEMPTS):
+            try:
+                return await self._call(fn, *args, **kwargs)
+            except Exception as error:
+                last_error = error
+                if not self._is_retryable(error):
+                    raise
+                if attempt < self.RETRY_ATTEMPTS - 1:
+                    delay = self.RETRY_BASE_DELAY * (2 ** attempt)
+                    logging.warning(
+                        f"{getattr(fn, '__name__', 'request')} failed "
+                        f"({error}); retrying in {delay}s"
+                    )
+                    if delay:
+                        await asyncio.sleep(delay)
+
+        raise last_error  # type: ignore[misc]
+
+    async def _spot_positions(self) -> List[Dict[str, Any]]:
+        """
+        Fetch spot positions across every portfolio.
+
+        This is the source of truth for balances because the `/accounts`
+        endpoint omits staked funds entirely: a staked ETH holding reports both
+        `available_balance` and `hold` as zero there, while the portfolio
+        breakdown reports it as a position with
+        `account_type == 'ACCOUNT_TYPE_STAKED_FUNDS'`.
+
+        Raises:
+            Exception: if the portfolio list is unavailable, or if no single
+                portfolio breakdown could be fetched. Callers use this to
+                distinguish failure from an account that genuinely holds
+                nothing.
+        """
+        response = await self._retrying(self.client.get_portfolios)
+        portfolios = self._response_dict(response).get("portfolios", []) or []
+        uuids = [entry.get("uuid") for entry in portfolios if entry.get("uuid")]
+
+        if not uuids:
+            raise RuntimeError("Coinbase returned no portfolios")
+
+        positions: List[Dict[str, Any]] = []
+        failures = 0
+
+        for uuid in uuids:
+            try:
+                breakdown = await self._retrying(
+                    self.client.get_portfolio_breakdown, portfolio_uuid=uuid
+                )
+            except Exception as error:
+                # One inaccessible portfolio (e.g. futures) must not hide the
+                # holdings in the others.
+                failures += 1
+                logging.warning(f"Could not fetch breakdown for {uuid}: {error}")
+                continue
+
+            payload = self._response_dict(breakdown).get("breakdown", {}) or {}
+            positions.extend(payload.get("spot_positions", []) or [])
+
+        if failures == len(uuids):
+            raise RuntimeError("No portfolio breakdown could be fetched")
+
+        return positions
+
+    @staticmethod
+    def _response_dict(response: Any) -> Dict[str, Any]:
+        """Prefer the SDK's own converter; fall back for plain dicts."""
+        if isinstance(response, dict):
+            return response
+        if hasattr(response, "to_dict"):
+            return response.to_dict()
+        return {}
+
+    @classmethod
+    def _amount(cls, value: Any) -> Decimal:
+        """Coerce an API amount to Decimal, treating anything unusable as zero."""
+        if value is None or value == "":
+            return Decimal(0)
+        try:
+            # Route floats through str() so we get the shortest representation
+            # rather than the full binary expansion of e.g. 0.00032322.
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError, TypeError):
+            logging.warning(f"Ignoring unparseable amount: {value!r}")
+            return Decimal(0)
+
+    @classmethod
+    def _amount_str(cls, value: Decimal) -> str:
+        """Format an amount to at most 8 dp, keeping at least 2 for readability."""
+        quantized = value.quantize(cls.AMOUNT_PLACES)
+        trimmed = quantized.normalize()
+        exponent = trimmed.as_tuple().exponent
+        if isinstance(exponent, int) and exponent > -2:
+            trimmed = trimmed.quantize(Decimal("0.01"))
+        return f"{trimmed:f}"
+
+    def _aggregate(self, positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Collapse spot positions into one holding per currency.
+
+        A single asset can arrive as several positions -- a spot wallet and a
+        staked-funds entry, for instance -- so amounts are summed per symbol.
+        `balance` is the total including staked funds; `available` is only what
+        can actually be traded.
+        """
+        totals: Dict[str, Dict[str, Decimal]] = {}
+
+        for position in positions:
+            if not isinstance(position, dict):
+                continue
+            currency = str(position.get("asset") or "").upper()
+            if not currency:
+                continue
+
+            # Cash positions carry their amount in the fiat field only.
+            balance = self._amount(position.get("total_balance_crypto"))
+            if balance == 0:
+                balance = self._amount(position.get("total_balance_fiat"))
+
+            available = self._amount(position.get("available_to_trade_crypto"))
+            if available == 0:
+                available = self._amount(position.get("available_to_trade_fiat"))
+
+            entry = totals.setdefault(
+                currency, {"balance": Decimal(0), "available": Decimal(0)}
+            )
+            entry["balance"] += balance
+            entry["available"] += available
+
+        portfolio = [
+            {
+                "currency": currency,
+                "balance": self._amount_str(amounts["balance"]),
+                "available": self._amount_str(amounts["available"]),
+            }
+            for currency, amounts in totals.items()
+            if amounts["balance"] > 0
+        ]
+
+        logging.info(f"Portfolio contains {len(portfolio)} holdings")
+        return portfolio
+
+    async def _accounts_fallback(self) -> List[Dict[str, Any]]:
+        """
+        Legacy `/accounts` reading, used only if the breakdown path fails.
+
+        Note this view cannot see staked funds -- that is the limitation which
+        made the breakdown endpoint necessary -- but it is better than nothing
+        when the breakdown endpoint is unavailable.
+        """
+        logging.info("Falling back to the accounts endpoint")
+        response = await self._retrying(self.client.get_accounts)
+        accounts = self._response_dict(response).get("accounts", []) or []
+
+        portfolio: List[Dict[str, Any]] = []
+
+        for account in accounts:
+            account_type = account.get("type", "")
+            available_balance = account.get("available_balance", {})
+            ready = account.get("ready", False)
+
+            if not isinstance(available_balance, dict):
+                continue
+            if account_type == "ACCOUNT_TYPE_CRYPTO" and not ready:
+                continue
+            if account_type not in ("ACCOUNT_TYPE_CRYPTO", "ACCOUNT_TYPE_FIAT"):
+                continue
+
+            currency = available_balance.get("currency", "")
+            available = self._amount(available_balance.get("value"))
+            hold = account.get("hold")
+            # Funds on hold are still owned, so they belong in the total.
+            held = self._amount(hold.get("value")) if isinstance(hold, dict) else Decimal(0)
+            balance = available + held
+
+            if not currency or balance <= 0:
+                continue
+
+            portfolio.append({
+                "currency": currency,
+                "balance": self._amount_str(balance),
+                "available": self._amount_str(available),
+            })
+
+        return portfolio
+
     async def get_portfolio(self) -> List[Dict[str, Any]]:
         """
         Fetch and format the user's cryptocurrency portfolio from Coinbase.
-        
+
+        Balances come from the portfolio breakdown endpoint so that staked funds
+        are included; `/accounts` is a fallback that cannot see them.
+
         Returns:
             List of dictionaries containing currency holdings:
             [
                 {
                     "currency": str,     # Cryptocurrency symbol
-                    "balance": str,      # Total balance
-                    "available": str     # Available balance for trading
+                    "balance": str,      # Total balance, including staked funds
+                    "available": str     # Balance available for trading
                 },
                 ...
             ]
+            An empty list means the account holds nothing.
+
+        Raises:
+            Exception: if the portfolio could not be fetched. Errors propagate
+                so the API answers 500 and the UI can offer a retry, rather
+                than rendering a misleading "no holdings" state.
         """
+        logging.info("Fetching portfolio data...")
+
         try:
-            logging.info("Fetching portfolio data...")
-            response = self.client.get_accounts()
-            logging.debug(f"Raw response type: {type(response)}")
-            
-            portfolio = []
-            response_dict = self._to_dict(response)
-            accounts = response_dict.get('accounts', [])
-            logging.info(f"Found {len(accounts)} accounts")
-            
-            for account in accounts:
-                account_type = account.get('type', '')
-                available_balance = account.get('available_balance', {})
-                ready = account.get('ready', False)
-                
-                logging.debug(f"Processing {account.get('name')} - Type: {account_type}, Ready: {ready}")
-                
-                if isinstance(available_balance, dict):
-                    currency = available_balance.get('currency', '')
-                    value = available_balance.get('value', '0')
-                    
-                    logging.debug(f"Balance for {currency}: {value}")
-                    
-                    # Include account if:
-                    # 1. For crypto: account is ready AND has non-zero balance
-                    # 2. For fiat: has non-zero balance
-                    if (account_type == 'ACCOUNT_TYPE_CRYPTO' and ready and float(value) > 0) or \
-                       (account_type == 'ACCOUNT_TYPE_FIAT' and float(value) > 0):
-                        portfolio.append({
-                            "currency": currency,
-                            "balance": value,
-                            "available": value
-                        })
-                        logging.debug(f"Added {currency} to portfolio")
-            
-            logging.info(f"Final portfolio: {portfolio}")
-            return portfolio
-            
-        except Exception as e:
-            logging.error(f"Error fetching portfolio: {str(e)}", exc_info=True)
-            return []
+            positions = await self._spot_positions()
+        except Exception as error:
+            logging.warning(
+                f"Portfolio breakdown unavailable ({error}); trying accounts endpoint"
+            )
+            return await self._accounts_fallback()
+
+        # An empty breakdown is a successful answer, not a reason to fall back:
+        # falling back here would make "holds nothing" indistinguishable from
+        # "request failed".
+        return self._aggregate(positions)
 
     async def get_crypto_price(self, product_id: str) -> Dict[str, Any]:
         """
