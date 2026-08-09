@@ -236,7 +236,10 @@ class AIService:
 
         load_dotenv()
         self.api_key = os.getenv("OPENAI_API_KEY")
+        self.base_url = os.getenv("OPENAI_BASE_URL")
         self.model = os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
+        #: Overridable because some gateways only accept temperature=1.
+        self.temperature = float(os.getenv("OPENAI_TEMPERATURE", str(TEMPERATURE)))
         self.enable_ai_recommendations = (
             os.getenv("ENABLE_AI_RECOMMENDATIONS", "true").lower() == "true"
         )
@@ -246,8 +249,12 @@ class AIService:
             self.client = None
         else:
             try:
-                self.client = AsyncOpenAI(api_key=self.api_key)
-                logging.info("Successfully initialized OpenAI client")
+                self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+                logging.info(
+                    "Successfully initialized OpenAI client (base_url=%s, model=%s)",
+                    self.base_url or "default",
+                    self.model,
+                )
             except Exception as e:
                 logging.error(f"Failed to initialize OpenAI client: {e}")
                 self.client = None
@@ -301,7 +308,7 @@ class AIService:
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=TEMPERATURE,
+                temperature=self.temperature,
                 response_format=RESPONSE_FORMAT,
                 max_tokens=2000,
             )

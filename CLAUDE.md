@@ -91,6 +91,15 @@ npm run dev          # Starts both frontend and backend concurrently
   so the frontend must handle a successful response that carries no price
 - Fiat balances (e.g. `GBP`) appear in the portfolio but have no tradeable pair; the UI treats them
   as cash valued 1:1 and never requests a price for them
+- Portfolio balances come from `get_portfolios` + `get_portfolio_breakdown` (`spot_positions`), **not**
+  `get_accounts`. The accounts endpoint omits staked funds entirely — a staked ETH holding reports
+  `available_balance` *and* `hold` as zero there — so reading it dropped staked assets from the
+  portfolio. `balance` is the total **including** staked funds; `available` is only what can be
+  traded, so a fully staked holding legitimately shows `available: "0.00"`.
+- `/api/crypto/portfolio` **raises on failure** (→ 500) rather than returning `[]`, so a credential or
+  network error surfaces as a retryable error instead of a misleading "no holdings" state. An empty
+  list means the account genuinely holds nothing. `get_accounts` remains a fallback if the breakdown
+  endpoint is unavailable, with the known limitation that it cannot see staked funds.
 - `/api/recommendations/` returns **structured JSON**, not prose: `status`, `summary`,
   `recommendations[]`, `disclaimer`, `groundedness` and the grounding `context`.
   A model that is unconfigured or unreachable is a **200 with `status="unavailable"`**,

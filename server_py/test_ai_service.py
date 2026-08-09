@@ -15,7 +15,7 @@ from app.schemas.grounding import CONFIDENCE_RUBRIC
 from app.schemas.recommendation import ModelPayload
 from app.services import ai_service as ai_service_module
 from app.services.ai_errors import AIUnavailableError
-from app.services.ai_service import AIService, RESPONSE_FORMAT, render_context
+from app.services.ai_service import AIService, RESPONSE_FORMAT, TEMPERATURE, render_context
 from app.services.context_builder import ContextBuilder
 from app.services.fakes import FakeAIService, FakeCoinbaseService, FakeMarketContextService, Scenario
 from app.services.fakes import scenarios
@@ -177,6 +177,7 @@ def _service(client):
     service.initialized = True
     service.api_key = "test"
     service.model = "test-model"
+    service.temperature = TEMPERATURE
     service.enable_ai_recommendations = True
     service.client = client
     return service
