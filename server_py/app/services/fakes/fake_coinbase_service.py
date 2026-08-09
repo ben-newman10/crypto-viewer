@@ -61,3 +61,35 @@ class FakeCoinbaseService:
             )
 
         return fixtures.historical_for(product_id)
+
+    async def get_candles(
+        self,
+        product_id: str,
+        granularity: int = 86400,
+        limit: int = fixtures.DAILY_CANDLE_COUNT,
+    ) -> List[Dict[str, Any]]:
+        """
+        Long-run candle series used by the recommendation pipeline.
+
+        Under ``short-history`` the series is truncated to 40 bars: enough for
+        RSI and MACD, not enough for a 50- or 200-day moving average. That is a
+        data-thinness scenario, not an outage -- the pipeline should still
+        answer, but with lower confidence.
+        """
+        await self._maybe_delay(scenarios.SLOW_HISTORICAL)
+
+        if self.scenario.has(scenarios.ERROR_HISTORICAL):
+            raise RuntimeError(
+                f"Simulated Coinbase outage while fetching candles for {product_id}"
+            )
+
+        if granularity != 86400:
+            # The fake only models a daily series; nothing in the app asks for
+            # anything else, and silently serving daily bars for an hourly
+            # request would make an indicator bug invisible.
+            raise ValueError(f"Fake candles are daily only, got granularity {granularity}")
+
+        if self.scenario.has(scenarios.SHORT_HISTORY):
+            limit = min(limit, 40)
+
+        return fixtures.daily_candles_for(product_id, count=limit)

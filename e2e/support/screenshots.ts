@@ -9,7 +9,7 @@
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 
 export const SCREENSHOT_DIR = path.resolve(process.cwd(), 'screenshots')
 
@@ -36,5 +36,21 @@ export async function captureFullPage(page: Page, name: string): Promise<string>
   mkdirSync(SCREENSHOT_DIR, { recursive: true })
   const file = path.join(SCREENSHOT_DIR, `${name}.png`)
   await page.screenshot({ path: file, fullPage: true, animations: 'disabled' })
+  return file
+}
+
+/**
+ * Capture a single element as `screenshots/<name>.png`.
+ *
+ * Used where the interesting thing is one component rather than a whole page —
+ * a recommendation card, for instance, which is unreadable at full-page scale.
+ */
+export async function captureElement(
+  locator: Locator,
+  name: string,
+): Promise<string> {
+  mkdirSync(SCREENSHOT_DIR, { recursive: true })
+  const file = path.join(SCREENSHOT_DIR, `${name}.png`)
+  await locator.screenshot({ path: file, animations: 'disabled' })
   return file
 }

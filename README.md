@@ -9,7 +9,9 @@ Crypto Viewer is a web application built with React, TypeScript, and Vite for tr
 - View your cryptocurrency portfolio with real-time updates (30-second refresh)
 - Fetch live cryptocurrency prices with 24-hour change indicators
 - Per-asset detail pages with a 24-hour price chart and an accessible data-table alternative
-- Get AI-powered cryptocurrency recommendations based on your portfolio
+- Grounded, confidence-rated AI recommendations: every claim is traced to a named
+  data field, verified server-side, and rated against a documented rubric
+  (see [Grounded recommendations](#grounded-recommendations))
 - Light and dark themes built on a shared design-token system
 - Responsive design (desktop, tablet, mobile) using Chakra UI components
 - Accessible to WCAG 2.1 AA, verified by automated axe-core scans in CI
@@ -107,8 +109,79 @@ The backend provides the following API endpoints:
 - **GET /api/crypto/portfolio**: Fetches the user's cryptocurrency portfolio with balances
 - **GET /api/crypto/price/{product_id}**: Fetches current price for a trading pair (e.g., BTC-GBP)
 - **GET /api/crypto/historical/{product_id}**: Fetches historical price data for a trading pair
-- **GET /api/recommendations/**: Generates AI-powered cryptocurrency recommendations
-- **GET /api/recommendations/analysis**: Provides detailed AI analysis of portfolio and market data
+- **GET /api/recommendations/**: Generates grounded, confidence-rated recommendations
+- **GET /api/recommendations/analysis**: Alias of the above, kept for existing callers
+
+## Grounded recommendations
+
+Recommendations are not free text from a model. The pipeline is built so that
+every figure shown can be traced back to data the app actually fetched, and so
+that a thin evidence base produces a *lower confidence rating* rather than
+confident-sounding prose written around the gap.
+
+### How a recommendation is produced
+
+1. **Grounding context** (`app/services/context_builder.py`). Portfolio
+   balances and prices come from Coinbase; 300 daily candles per asset feed
+   technical indicators computed **in code, never by the model**
+   (`app/services/indicators.py`): RSI(14), MACD(12,26,9), 50/200-day moving
+   averages with a golden/death-cross state, 30-day annualised volatility and
+   distance from the period high. Market cap, circulating supply and distance
+   from the all-time high come from CoinGecko; the Fear & Greed Index from
+   alternative.me.
+
+   Every field is named (`BTC.rsi_14`, `market.fear_greed_index`) and every
+   field that could not be computed is present and marked `unavailable`, with
+   the reason. A gap the model cannot see is a gap it cannot react to.
+
+2. **Structured model call** (`app/services/ai_service.py`). The system prompt
+   makes the field list a closed world: cite these names, copy their values
+   exactly, treat `unavailable` as a reason to lower confidence. The call uses
+   OpenAI structured outputs against a JSON schema at `temperature=0.25`, and
+   the reply is validated into a Pydantic model before anything downstream sees
+   it.
+
+3. **Groundedness check** (`app/services/groundedness.py`). Every supporting
+   fact is re-read against the context. An invented field or a value asserted
+   for an `unavailable` field is **dropped**; a misquoted number is
+   **corrected to the measured value**. On any violation the model is asked
+   once more with the specific corrections named; if the second attempt still
+   fails, the affected confidence rating is downgraded. The served payload can
+   never contain a number the app did not measure.
+
+4. **Disclaimer and logging** (`app/services/recommendation_service.py`). The
+   disclaimer is a server-side constant injected after the model call, so it
+   cannot be dropped or reworded. Each run appends the grounding context, the
+   model output, the check result and the price at call time to
+   `server_py/logs/recommendations.jsonl`.
+
+### Confidence rubric
+
+The rubric lives in `app/schemas/grounding.py` and is used in three places: the
+system prompt, the deterministic ceiling below, and the API response.
+
+| Rating | Requires |
+| --- | --- |
+| **high** | ≥3 independent signal categories available, ≥3 agreeing, no available category contradicting the call, and ≥80% data completeness |
+| **medium** | ≥2 categories available, a majority agreeing, and ≥50% data completeness |
+| **low** | <2 categories available, **or** the categories disagree, **or** completeness <50%, **or** the call rests mainly on one metric |
+
+Signal categories are *trend*, *momentum*, *volatility*, *sentiment* and
+*market structure*, grouped so that four momentum readings agreeing with each
+other cannot masquerade as four independent confirmations.
+
+The model rates itself against this rubric, but the rating it gets to keep is
+`min(model_confidence, data_ceiling)` — the ceiling is computed from
+completeness and category coverage alone. The response exposes both, plus
+`ceiling_reason`, so a capped rating is visible rather than silent.
+
+### Out of scope for this pass
+
+True on-chain data — exchange netflows, MVRV, whale wallet activity — needs a
+paid provider (Glassnode, CryptoQuant, Santiment) and is **not** included.
+Approximating it from price and volume would manufacture exactly the kind of
+confident, unverifiable claim this pipeline exists to prevent, so those fields
+are simply absent rather than faked.
 
 ## Development
 
@@ -142,6 +215,9 @@ Run specific test files:
 pytest test_ai_service.py
 pytest test_coinbase_service.py
 pytest test_crypto_router.py
+pytest test_indicators.py            # technical indicators
+pytest test_context_builder.py       # grounding context and its degradation
+pytest test_groundedness.py          # verification and the confidence rubric
 pytest test_recommendations_router.py
 ```
 
@@ -189,9 +265,17 @@ combined with commas:
 | `error-prices` | Price lookups return an `error` payload |
 | `error-historical` | Candle history request fails |
 | `error-ai` | Analysis request fails (HTTP 500) |
-| `degraded-ai` | Analysis returns the service's fallback text |
+| `degraded-ai` | Model is unreachable; a 200 carries an explanation instead of calls |
+| `short-history` | Only 40 daily candles, so the moving averages cannot be computed (costs the `trend` category) |
+| `error-market-context` | CoinGecko and Fear & Greed unreachable (costs `sentiment` and `market_structure`) |
+| `partial-data` | Both of the above: the low-confidence case |
+| `ungrounded-ai` | Model quotes a figure not in the grounding context and cites a field that does not exist |
 | `slow-portfolio`, `slow-prices`, `slow-historical`, `slow-ai` | Delay that response by ~1.2s |
 | `slow` / `error` | Apply every slow / error flag at once |
+
+The grounding-data flags do not simulate an outage — the pipeline still
+answers under them. They exist so the confidence rubric and the groundedness
+check can be exercised end to end.
 
 ## Deployment
 

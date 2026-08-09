@@ -22,7 +22,7 @@ export const Scenario = {
   errorPrices: 'error-prices',
   errorHistorical: 'error-historical',
   errorAi: 'error-ai',
-  /** OpenAI call fails but the service degrades to its fallback string. */
+  /** OpenAI call fails but the pipeline degrades to a 200 with an explanation. */
   degradedAi: 'degraded-ai',
 
   /** Delayed responses (~1.2s), long enough to observe loading states. */
@@ -31,6 +31,21 @@ export const Scenario = {
   slowHistorical: 'slow-historical',
   slowAi: 'slow-ai',
   slowAll: 'slow',
+
+  /*
+   * Thin grounding data. These are not outages: the pipeline still answers,
+   * but with fewer signal categories available and a lower confidence ceiling.
+   */
+
+  /** Only 40 daily candles, so the moving averages cannot be computed. */
+  shortHistory: 'short-history',
+  /** CoinGecko and the Fear & Greed Index are unreachable. */
+  errorMarketContext: 'error-market-context',
+  /** Both at once: the low-confidence case. */
+  partialData: 'partial-data',
+
+  /** The model quotes figures that are not in the grounding context. */
+  ungroundedAi: 'ungrounded-ai',
 } as const
 
 export type ScenarioFlag = (typeof Scenario)[keyof typeof Scenario]
