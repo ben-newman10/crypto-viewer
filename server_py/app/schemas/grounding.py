@@ -29,6 +29,13 @@ except ImportError:  # pragma: no cover
 MetricStatus = Literal["available", "unavailable"]
 Confidence = Literal["low", "medium", "high"]
 
+#: Why an asset is in the context at all. A ``holding`` is one the reader owns;
+#: a ``candidate`` is one the app put forward for assessment. The distinction is
+#: the server's to make, never the model's -- it decides which calls are even
+#: meaningful (you cannot sell what you do not own) and it must not vary with a
+#: generation.
+AssetRole = Literal["holding", "candidate"]
+
 # Confidence levels, weakest first. Used for clamping.
 CONFIDENCE_ORDER: List[str] = ["low", "medium", "high"]
 
@@ -149,10 +156,13 @@ class DataCompleteness(BaseModel):
 
 
 class AssetContext(BaseModel):
-    """Everything known about one holding."""
+    """Everything known about one asset in the run."""
 
     symbol: str
     product_id: str
+    #: Defaults to ``holding`` so that every existing caller keeps its meaning:
+    #: before candidates existed, every asset in a context was one.
+    role: AssetRole = "holding"
     metrics: List[Metric] = []
     completeness: DataCompleteness
     #: Deterministic upper bound on confidence, derived from completeness
@@ -189,6 +199,14 @@ class RecommendationContext(BaseModel):
             if candidate.symbol.upper() == symbol.upper():
                 return candidate
         return None
+
+    def holdings(self) -> List[AssetContext]:
+        """Assets the reader owns, in the order they appear."""
+        return [asset for asset in self.assets if asset.role == "holding"]
+
+    def candidates(self) -> List[AssetContext]:
+        """Assets the reader does not own, put forward for assessment."""
+        return [asset for asset in self.assets if asset.role == "candidate"]
 
 
 # ---------------------------------------------------------------------------

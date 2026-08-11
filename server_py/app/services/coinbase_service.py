@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import functools
 import os
-from typing import List, Dict, Any
+import time
+from typing import List, Dict, Any, Optional, Tuple
 import json
 from dotenv import load_dotenv
 from coinbase.rest import RESTClient
@@ -23,6 +24,12 @@ ONE_DAY = 86400
 #: enough history for a 200-period moving average plus the lookback needed to
 #: tell a fresh crossover from a long-standing one.
 MAX_CANDLES = 300
+
+#: How long a fetched candle series stays usable. A daily candle only changes
+#: once a day, and the recommendation panel refetches every 15 minutes, so
+#: re-requesting several hundred bars per asset on each poll buys nothing. Short
+#: enough that the newest (still-forming) bar does not go far out of date.
+CANDLE_CACHE_TTL_SECONDS = 10 * 60
 
 
 class CoinbaseService:
@@ -62,6 +69,11 @@ class CoinbaseService:
             self.client = RESTClient(api_key=api_key, api_secret=api_secret)
         except Exception as e:
             raise ValueError(f"Failed to initialize Coinbase client: {str(e)}")
+
+        # Cached on the service because the service is a singleton
+        # (``dependencies.py``); ``ContextBuilder`` is rebuilt per request, so a
+        # cache held there would never survive to be read.
+        self._candle_cache: Dict[Tuple[str, int, int], Tuple[float, List[Dict[str, Any]]]] = {}
 
     def _to_dict(self, obj: Any) -> Dict[str, Any]:
         """
@@ -496,6 +508,9 @@ class CoinbaseService:
         200-period moving average, so this takes the granularity and window
         size as arguments rather than hard-coding one day of hourly candles.
 
+        Results are cached for ``CANDLE_CACHE_TTL_SECONDS``. A failure is not
+        cached, so an outage does not persist past the request that hit it.
+
         Args:
             product_id: Trading pair identifier (e.g. 'BTC-GBP')
             granularity: Candle width in seconds (3600 hourly, 86400 daily)
@@ -508,6 +523,12 @@ class CoinbaseService:
             Exception: If the upstream request fails.
         """
         limit = max(1, min(limit, MAX_CANDLES))
+
+        cache_key = (product_id, granularity, limit)
+        cached = self._cached_candles(cache_key)
+        if cached is not None:
+            logging.debug("Serving %s candles for %s from cache", limit, product_id)
+            return cached
 
         end_time = datetime.now(timezone.utc)
         start_time = end_time - timedelta(seconds=granularity * limit)
@@ -528,7 +549,7 @@ class CoinbaseService:
             response.raise_for_status()
             candles = response.json()
 
-        return [
+        series = [
             {
                 "time": datetime.fromtimestamp(candle[0], tz=timezone.utc).isoformat(),
                 "low": str(candle[1]),
@@ -539,3 +560,21 @@ class CoinbaseService:
             }
             for candle in candles
         ]
+
+        self._candle_cache[cache_key] = (time.monotonic(), series)
+        return series
+
+    def _cached_candles(
+        self,
+        key: Tuple[str, int, int],
+    ) -> Optional[List[Dict[str, Any]]]:
+        """A cached series if it is still fresh, dropping it once it is not."""
+        entry = self._candle_cache.get(key)
+        if entry is None:
+            return None
+
+        stamped, series = entry
+        if (time.monotonic() - stamped) > CANDLE_CACHE_TTL_SECONDS:
+            del self._candle_cache[key]
+            return None
+        return series

@@ -16,11 +16,13 @@ things matter more than anything else here:
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..schemas.grounding import (
     AssetContext,
+    AssetRole,
     Metric,
     RecommendationContext,
     confidence_ceiling,
@@ -37,6 +39,29 @@ FIAT_CURRENCIES = {"GBP", "USD", "EUR"}
 #: and the minimum that supports a 200-period moving average with a lookback.
 CANDLE_GRANULARITY_SECONDS = 86400
 CANDLE_LIMIT = 300
+
+#: How many assets may be in flight at once. The candle endpoint is IP rate
+#: limited and ``get_candles`` deliberately bypasses ``_retrying``, so an
+#: unbounded fan-out would answer a wide run with 429s rather than data.
+FETCH_CONCURRENCY = 6
+
+
+@dataclass(frozen=True)
+class AssetSpec:
+    """
+    One asset to fetch and describe.
+
+    The context used to be assembled by zipping the portfolio list against the
+    fetch results twice, which only works while every asset in the run is a
+    holding. Naming the asset once, up front, is what lets an asset that is
+    *not* held join the same pipeline without a second code path.
+    """
+
+    symbol: str
+    role: AssetRole
+    product_id: str
+    #: ``None`` when the asset is not held, which is why it is not simply 0.0.
+    balance: Optional[float]
 
 
 def _available(
@@ -270,69 +295,57 @@ class ContextBuilder:
     async def build(self, quote_currency: str = "GBP") -> RecommendationContext:
         portfolio = await self.coinbase.get_portfolio()
 
-        holdings = [
-            holding
-            for holding in portfolio
-            if str(holding.get("currency", "")).upper() not in FIAT_CURRENCIES
-        ]
         cash = [
             holding
             for holding in portfolio
             if str(holding.get("currency", "")).upper() in FIAT_CURRENCIES
         ]
+        specs = self._holding_specs(portfolio, quote_currency)
 
         sources: Dict[str, str] = {"coinbase": "ok"}
 
-        # Per-asset market data, gathered concurrently: one slow pair should not
-        # serialise the whole context build.
-        per_asset = await asyncio.gather(
-            *(
-                self._fetch_asset(str(holding["currency"]).upper(), quote_currency)
-                for holding in holdings
-            )
-        )
+        fetched = await self._fetch_all(specs)
 
-        symbols = [str(holding["currency"]).upper() for holding in holdings]
-        stats, fear_greed = await self._fetch_market_context(symbols, quote_currency, sources)
+        stats, fear_greed = await self._fetch_market_context(
+            [spec.symbol for spec in specs], quote_currency, sources
+        )
 
         # Portfolio weights need every holding's value, so they are computed
         # after the price fetches have all returned.
         cash_value = sum(_to_float(holding.get("balance")) or 0.0 for holding in cash)
-        asset_values: Dict[str, Optional[float]] = {}
-        for holding, fetched in zip(holdings, per_asset):
-            symbol = str(holding["currency"]).upper()
-            balance = _to_float(holding.get("balance"))
-            price = fetched["price"]
-            asset_values[symbol] = (
-                balance * price if balance is not None and price is not None else None
-            )
+        asset_values: Dict[str, Optional[float]] = {
+            spec.symbol: _position_value(spec, result)
+            for spec, result in zip(specs, fetched)
+        }
 
-        total_value = cash_value + sum(value for value in asset_values.values() if value)
+        # Only holdings are wealth. An asset the reader does not own has no
+        # balance, so it contributes nothing here -- asserted through the role
+        # rather than left to fall out of a None, so a later edit cannot quietly
+        # inflate the portfolio with assets that were only ever suggestions.
+        total_value = cash_value + sum(
+            asset_values[spec.symbol] or 0.0 for spec in specs if spec.role == "holding"
+        )
 
         shared_metrics = self._shared_metrics(
             total_value=total_value,
             cash_value=cash_value,
-            asset_count=len(holdings),
+            asset_count=sum(1 for spec in specs if spec.role == "holding"),
             fear_greed=fear_greed,
             quote_currency=quote_currency,
         )
 
-        assets: List[AssetContext] = []
-        for holding, fetched in zip(holdings, per_asset):
-            symbol = str(holding["currency"]).upper()
-            assets.append(
-                self._asset_context(
-                    symbol=symbol,
-                    product_id=fetched["product_id"],
-                    holding=holding,
-                    fetched=fetched,
-                    value=asset_values.get(symbol),
-                    total_value=total_value,
-                    stats=stats.get(symbol),
-                    shared_metrics=shared_metrics,
-                    quote_currency=quote_currency,
-                )
+        assets = [
+            self._asset_context(
+                spec=spec,
+                fetched=result,
+                value=asset_values[spec.symbol],
+                total_value=total_value,
+                stats=stats.get(spec.symbol),
+                shared_metrics=shared_metrics,
+                quote_currency=quote_currency,
             )
+            for spec, result in zip(specs, fetched)
+        ]
 
         return RecommendationContext(
             generated_at=datetime.now(timezone.utc).isoformat(),
@@ -344,9 +357,51 @@ class ContextBuilder:
 
     # -- fetching -----------------------------------------------------------
 
-    async def _fetch_asset(self, symbol: str, quote_currency: str) -> Dict[str, Any]:
+    @staticmethod
+    def _holding_specs(
+        portfolio: Sequence[Dict[str, Any]],
+        quote_currency: str,
+    ) -> List[AssetSpec]:
+        """
+        One spec per tradeable holding, in portfolio order.
+
+        Fiat is excluded here rather than downstream: it is cash, not a
+        position, and it has no pair to price or chart.
+        """
+        specs: List[AssetSpec] = []
+        for holding in portfolio:
+            symbol = str(holding.get("currency", "")).upper()
+            if not symbol or symbol in FIAT_CURRENCIES:
+                continue
+            specs.append(
+                AssetSpec(
+                    symbol=symbol,
+                    role="holding",
+                    product_id=f"{symbol}-{quote_currency}",
+                    balance=_to_float(holding.get("balance")),
+                )
+            )
+        return specs
+
+    async def _fetch_all(self, specs: Sequence[AssetSpec]) -> List[Dict[str, Any]]:
+        """
+        Market data for every spec, concurrently but bounded.
+
+        One slow pair should not serialise the whole build, and a wide run
+        should not open a request per asset all at once -- see
+        ``FETCH_CONCURRENCY``.
+        """
+        limit = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+        async def fetch(spec: AssetSpec) -> Dict[str, Any]:
+            async with limit:
+                return await self._fetch_asset(spec)
+
+        return list(await asyncio.gather(*(fetch(spec) for spec in specs)))
+
+    async def _fetch_asset(self, spec: AssetSpec) -> Dict[str, Any]:
         """Price and candles for one asset, with failures captured rather than raised."""
-        product_id = f"{symbol}-{quote_currency}"
+        product_id = spec.product_id
         result: Dict[str, Any] = {
             "product_id": product_id,
             "price": None,
@@ -462,9 +517,7 @@ class ContextBuilder:
 
     def _asset_context(
         self,
-        symbol: str,
-        product_id: str,
-        holding: Dict[str, Any],
+        spec: AssetSpec,
         fetched: Dict[str, Any],
         value: Optional[float],
         total_value: float,
@@ -472,7 +525,8 @@ class ContextBuilder:
         shared_metrics: List[Metric],
         quote_currency: str,
     ) -> AssetContext:
-        balance = _to_float(holding.get("balance"))
+        symbol = spec.symbol
+        balance = spec.balance
         closes: List[float] = fetched["closes"]
         price_error: Optional[str] = fetched["price_error"]
         candle_error: Optional[str] = fetched["candle_error"]
@@ -533,7 +587,8 @@ class ContextBuilder:
 
         return AssetContext(
             symbol=symbol,
-            product_id=product_id,
+            product_id=spec.product_id,
+            role=spec.role,
             metrics=metrics,
             completeness=completeness,
             confidence_ceiling=ceiling,
@@ -567,6 +622,19 @@ class ContextBuilder:
                 note="CoinGecko; against the all-time high in the quote currency",
             ),
         ]
+
+
+def _position_value(spec: AssetSpec, fetched: Dict[str, Any]) -> Optional[float]:
+    """
+    What this position is worth, or ``None`` when that cannot be known.
+
+    ``None`` rather than zero on purpose: a missing price and a zero balance are
+    different facts, and only one of them is a measurement.
+    """
+    price = fetched["price"]
+    if spec.balance is None or price is None:
+        return None
+    return spec.balance * price
 
 
 def _to_float(value: Any) -> Optional[float]:
