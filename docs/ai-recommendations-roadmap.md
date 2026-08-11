@@ -49,7 +49,7 @@ Decisions already made:
 | 9 | Correlation between a candidate and your portfolio's own return series | 5 |
 | 10 | Calibration: read the audit log back, score matured calls | 7 |
 | 11 | `GET /api/recommendations/calibration` + its own UI panel | 7 |
-| — | Retry gating (pure cost saving, no quality change) | 0 |
+| — | Retry gating — deferred; see Phase 0, it is not a free refactor | 2 |
 
 ---
 
@@ -91,23 +91,24 @@ uncached; it is the live 24h chart feed. **The cache must live on the service si
 (`dependencies.py:30-36`), not on `ContextBuilder` — the builder is constructed per request
 (`recommendation_service.py:77`), so a cache there is dead code.
 
-**`recommendation_service.py`** — gate the retry. Today any violation regenerates the whole
-payload; with candidates that payload roughly doubles. But `unknown_metric` and
-`cited_unavailable_metric` facts are dropped regardless (`groundedness.py:127-159`) and
-mismatches are auto-corrected to the measured value, so the retry only earns its keep when
-dropping leaves a recommendation with too little evidence to stand on:
+**Retry gating — moved out of this phase.** The original plan put it here as a pure cost
+saving. It is not one, and it does not belong in a phase whose criterion is "no observable
+change":
 
-```python
-MIN_FACTS_BEFORE_RETRY = 2
-if not outcome.passed and any(
-    len(outcome.facts.get(item.symbol.upper(), [])) < MIN_FACTS_BEFORE_RETRY
-    for item in payload.recommendations
-):
-    ...existing retry...
-```
+- Under `ungrounded-ai` each asset cites four real facts plus one invented field. Only the
+  invented one is dropped, leaving four — so any sensible `MIN_FACTS_BEFORE_RETRY` skips the
+  retry and breaks `test_a_fabricated_value_is_corrected_retried_and_penalised`, whose comment
+  reads "a failed check must trigger one retry". That assertion is a deliberate contract, not
+  an incidental detail.
+- The argument for gating ("mismatches are auto-corrected anyway") misses that a violation also
+  costs a confidence step in `_assemble` (`:159-171`). The retry is the model's one chance to
+  earn that back. Gating it makes a single misquote permanently expensive.
+- `pick_better` already keeps whichever answer has fewer violations, so the retry can never make
+  the payload worse — only cost a call.
 
-Prefer this over a targeted repair call (re-asking for a subset with a reduced schema): more
-code, more surface, and the payload has to be spliced back together for no measurable gain.
+Revisit in Phase 2, when the real payload size is known and the trade-off can be priced. If it
+is taken then, it needs its own commit and a reasoned update to that test — not a silent
+edit.
 
 **Risk:** the refactor silently reorders assets, changing deterministic card order.
 `test_the_endpoint_returns_one_structured_call_per_holding` asserts `["BTC","ETH","SOL"]` and
