@@ -415,3 +415,148 @@ async def test_wallet_and_staked_positions_for_one_asset_are_summed(make_service
     assert len(holdings) == 1
     assert float(holdings["ETH"]["balance"]) == pytest.approx(1.72541407)
     assert float(holdings["ETH"]["available"]) == pytest.approx(1.5)
+
+
+# ---------------------------------------------------------------------------
+# Product listing
+# ---------------------------------------------------------------------------
+# The catalogue that decides whether a suggested coin can actually be bought.
+# Trimmed from a live api.exchange.coinbase.com/products response.
+
+PRODUCTS_PAYLOAD: List[Dict[str, Any]] = [
+    {
+        "id": "ADA-GBP", "base_currency": "ADA", "quote_currency": "GBP",
+        "status": "online", "trading_disabled": False, "cancel_only": False,
+        "post_only": False, "limit_only": False, "auction_mode": False,
+    },
+    {
+        # Limit-only is restricted, not closed: it must still count as tradeable.
+        "id": "LINK-GBP", "base_currency": "LINK", "quote_currency": "GBP",
+        "status": "online", "trading_disabled": False, "cancel_only": False,
+        "post_only": False, "limit_only": True, "auction_mode": False,
+    },
+    {
+        "id": "TIME-GBP", "base_currency": "TIME", "quote_currency": "GBP",
+        "status": "delisted", "trading_disabled": True, "cancel_only": False,
+        "post_only": False, "limit_only": False, "auction_mode": False,
+    },
+    {
+        "id": "HALT-GBP", "base_currency": "HALT", "quote_currency": "GBP",
+        "status": "online", "trading_disabled": False, "cancel_only": True,
+        "post_only": False, "limit_only": False, "auction_mode": False,
+    },
+    {
+        "id": "SOL-USD", "base_currency": "SOL", "quote_currency": "USD",
+        "status": "online", "trading_disabled": False, "cancel_only": False,
+        "post_only": False, "limit_only": False, "auction_mode": False,
+    },
+]
+
+
+class StubHttpResponse:
+    """Mimics an httpx response, unlike ``StubResponse`` above which mimics the SDK."""
+
+    def __init__(self, payload: Any, ok: bool = True) -> None:
+        self._payload = payload
+        self._ok = ok
+
+    def raise_for_status(self) -> None:
+        if not self._ok:
+            raise RuntimeError("simulated upstream failure")
+
+    def json(self) -> Any:
+        return self._payload
+
+
+def stub_httpx(monkeypatch, payload: Any = None, ok: bool = True, error: Exception = None):
+    """Point every httpx.AsyncClient at a canned response for one test."""
+    calls: List[str] = []
+
+    class StubAsyncClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info: Any) -> bool:
+            return False
+
+        async def get(self, url: str, params: Any = None) -> StubHttpResponse:
+            calls.append(url)
+            if error is not None:
+                raise error
+            return StubHttpResponse(payload, ok)
+
+    monkeypatch.setattr(coinbase_service_module.httpx, "AsyncClient", StubAsyncClient)
+    return calls
+
+
+async def test_only_online_tradeable_pairs_in_the_quote_currency_are_listed(
+    make_service, monkeypatch
+):
+    stub_httpx(monkeypatch, PRODUCTS_PAYLOAD)
+    service = make_service(StubClient())
+
+    assert await service.list_products("GBP") == ["ADA", "LINK"]
+
+
+async def test_a_limit_only_market_still_counts_as_tradeable(make_service, monkeypatch):
+    """
+    Limit-only means "no market orders", not "closed". Excluding it would drop
+    an asset the reader can genuinely buy.
+    """
+    stub_httpx(monkeypatch, PRODUCTS_PAYLOAD)
+    service = make_service(StubClient())
+
+    assert "LINK" in await service.list_products("GBP")
+
+
+async def test_the_product_listing_is_cached(make_service, monkeypatch):
+    calls = stub_httpx(monkeypatch, PRODUCTS_PAYLOAD)
+    service = make_service(StubClient())
+
+    first = await service.list_products("GBP")
+    second = await service.list_products("GBP")
+
+    assert first == second
+    assert len(calls) == 1, "a cached listing must not be re-fetched"
+
+
+async def test_a_failed_product_listing_returns_empty_rather_than_raising(
+    make_service, monkeypatch
+):
+    """
+    Discovery is optional. An unreachable catalogue must degrade to "no
+    candidates", never take the recommendation down with it.
+    """
+    stub_httpx(monkeypatch, error=RuntimeError("connection reset"))
+    service = make_service(StubClient())
+
+    assert await service.list_products("GBP") == []
+
+
+async def test_an_http_error_on_the_product_listing_returns_empty(
+    make_service, monkeypatch
+):
+    stub_httpx(monkeypatch, PRODUCTS_PAYLOAD, ok=False)
+    service = make_service(StubClient())
+
+    assert await service.list_products("GBP") == []
+
+
+async def test_a_nonsense_product_payload_returns_empty(make_service, monkeypatch):
+    stub_httpx(monkeypatch, {"unexpected": "shape"})
+    service = make_service(StubClient())
+
+    assert await service.list_products("GBP") == []
+
+
+async def test_a_failed_listing_is_not_cached(make_service, monkeypatch):
+    """A single outage must not blank discovery for the next six hours."""
+    stub_httpx(monkeypatch, error=RuntimeError("connection reset"))
+    service = make_service(StubClient())
+    assert await service.list_products("GBP") == []
+
+    stub_httpx(monkeypatch, PRODUCTS_PAYLOAD)
+    assert await service.list_products("GBP") == ["ADA", "LINK"]

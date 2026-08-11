@@ -31,6 +31,25 @@ MAX_CANDLES = 300
 #: enough that the newest (still-forming) bar does not go far out of date.
 CANDLE_CACHE_TTL_SECONDS = 10 * 60
 
+#: The keyless listing of every pair the exchange knows about. Deliberately the
+#: same host as the candles endpoint: a pair listed here is one whose history we
+#: can actually fetch, which is what makes "we can analyse this" true by
+#: construction rather than by hope. The Advanced Trade product list is a
+#: *different* catalogue and would not give that guarantee.
+PRODUCTS_URL = "https://api.exchange.coinbase.com/products"
+
+#: Listings change on the scale of weeks, so this is cached far longer than
+#: prices are.
+PRODUCT_CACHE_TTL_SECONDS = 6 * 60 * 60
+
+#: Bounded so a hanging listing cannot hold up a whole recommendation run.
+PRODUCTS_TIMEOUT_SECONDS = 8.0
+
+#: Product states that mean "you cannot open a position here right now".
+#: ``limit_only`` is deliberately absent: a limit-only market is restricted, not
+#: closed, and excluding it would drop a tradeable asset.
+UNTRADEABLE_FLAGS = ("trading_disabled", "cancel_only", "post_only", "auction_mode")
+
 
 class CoinbaseService:
     """
@@ -74,6 +93,7 @@ class CoinbaseService:
         # (``dependencies.py``); ``ContextBuilder`` is rebuilt per request, so a
         # cache held there would never survive to be read.
         self._candle_cache: Dict[Tuple[str, int, int], Tuple[float, List[Dict[str, Any]]]] = {}
+        self._product_cache: Dict[str, Tuple[float, List[str]]] = {}
 
     def _to_dict(self, obj: Any) -> Dict[str, Any]:
         """
@@ -563,6 +583,67 @@ class CoinbaseService:
 
         self._candle_cache[cache_key] = (time.monotonic(), series)
         return series
+
+    async def list_products(self, quote_currency: str = "GBP") -> List[str]:
+        """
+        Base currencies the exchange lists against ``quote_currency`` and will
+        currently trade.
+
+        This is the actionability half of candidate discovery: a coin the user
+        cannot buy is not a suggestion worth making, however good its numbers
+        look.
+
+        Returns:
+            Sorted base symbols, e.g. ``['ADA', 'AAVE', 'BTC', ...]``. An empty
+            list when the listing cannot be read -- callers treat that as "no
+            candidates", never as an error.
+        """
+        quote = quote_currency.upper()
+
+        cached = self._cached_products(quote)
+        if cached is not None:
+            return cached
+
+        try:
+            async with httpx.AsyncClient(timeout=PRODUCTS_TIMEOUT_SECONDS) as client:
+                response = await client.get(PRODUCTS_URL)
+                response.raise_for_status()
+                products = response.json()
+        except Exception as error:  # noqa: BLE001 - any failure means "unknown"
+            logging.warning("Coinbase product listing unavailable: %s", error)
+            return []
+
+        if not isinstance(products, list):
+            logging.warning("Coinbase product listing had an unexpected shape")
+            return []
+
+        bases = sorted(
+            {
+                str(product["base_currency"]).upper()
+                for product in products
+                if isinstance(product, dict)
+                and str(product.get("quote_currency", "")).upper() == quote
+                and str(product.get("status", "")).lower() == "online"
+                and not any(product.get(flag) for flag in UNTRADEABLE_FLAGS)
+                and product.get("base_currency")
+            }
+        )
+
+        logging.info("Coinbase lists %d tradeable %s pairs", len(bases), quote)
+        self._product_cache[quote] = (time.monotonic(), bases)
+        return bases
+
+    def _cached_products(self, quote: str) -> Optional[List[str]]:
+        """A cached product list if it is still fresh, dropping it once it is not."""
+        entry = self._product_cache.get(quote)
+        if entry is None:
+            return None
+
+        stamped, bases = entry
+        if (time.monotonic() - stamped) > PRODUCT_CACHE_TTL_SECONDS:
+            del self._product_cache[quote]
+            return None
+        return bases
 
     def _cached_candles(
         self,

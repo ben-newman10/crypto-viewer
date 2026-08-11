@@ -7,7 +7,7 @@ assertions and screenshots are stable across runs.
 
 import math
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # ---------------------------------------------------------------------------
 # Portfolio
@@ -239,6 +239,86 @@ MARKET_STATS: Dict[str, Dict[str, Optional[float]]] = {
 
 FEAR_GREED_VALUE = 61.0
 FEAR_GREED_CLASSIFICATION = "Greed"
+
+
+# ---------------------------------------------------------------------------
+# Candidate discovery
+# ---------------------------------------------------------------------------
+# Stands in for the exchange product listing and CoinGecko's market-cap-ranked
+# page. Shaped after the real responses: at the time of writing Coinbase listed
+# 23 tradeable GBP pairs, every one of them inside CoinGecko's top 250, so the
+# universe here is small and fully covered by the product list -- as it is in
+# production.
+
+# Base currencies the exchange will trade against GBP. Includes the two
+# stablecoins it really lists, so the screener's stablecoin exclusion is
+# exercised rather than assumed.
+TRADEABLE_BASES: Dict[str, List[str]] = {
+    "GBP": [
+        "AAVE", "ADA", "ALGO", "ATOM", "BCH", "BTC", "CHZ", "DOGE", "DOT",
+        "ETC", "ETH", "FIL", "LINK", "LTC", "SHIB", "SOL", "UNI", "USDC",
+        "USDT", "XTZ",
+    ],
+}
+
+# One row per coin, in market-cap order, mirroring /coins/markets. Only the
+# fields the pipeline reads are present. WSTETH is included and is *not* in the
+# tradeable list on purpose: it exercises both the wrapped-equivalent exclusion
+# and the not-tradeable one.
+UNIVERSE: List[Tuple[str, str, int, float, float, float, float, float, float]] = [
+    # symbol,  id,               rank, market cap,      volume,      24h,   7d,    30d,   ath%
+    ("BTC", "bitcoin", 1, 1_031_400_000_000.0, 21_000_000_000.0, -0.5, -0.8, -0.4, -49.7),
+    ("ETH", "ethereum", 2, 295_600_000_000.0, 12_000_000_000.0, 0.4, 0.7, 4.0, -62.3),
+    ("USDT", "tether", 3, 118_000_000_000.0, 40_000_000_000.0, 0.0, 0.0, 0.0, -26.8),
+    ("USDC", "usd-coin", 5, 52_000_000_000.0, 8_000_000_000.0, 0.0, 0.0, 0.0, -20.7),
+    ("SOL", "solana", 7, 55_900_000_000.0, 3_100_000_000.0, 0.1, 3.2, -0.8, -76.6),
+    ("DOGE", "dogecoin", 11, 24_000_000_000.0, 1_200_000_000.0, 3.8, 3.0, -0.9, -89.8),
+    ("WSTETH", "wrapped-steth", 14, 19_000_000_000.0, 60_000_000.0, 0.3, 0.6, 3.8, -61.0),
+    ("ADA", "cardano", 17, 16_000_000_000.0, 700_000_000.0, -2.8, -3.5, 14.5, -93.8),
+    ("LINK", "chainlink", 18, 15_400_000_000.0, 900_000_000.0, 6.1, 7.5, 9.3, -82.7),
+    ("BCH", "bitcoin-cash", 22, 11_800_000_000.0, 400_000_000.0, 0.5, 0.2, -12.4, -94.4),
+    ("LTC", "litecoin", 27, 8_600_000_000.0, 500_000_000.0, 0.8, 1.3, 2.6, -88.5),
+    ("SHIB", "shiba-inu", 36, 6_900_000_000.0, 220_000_000.0, -0.7, -9.5, 5.8, -94.7),
+    ("UNI", "uniswap", 37, 6_400_000_000.0, 190_000_000.0, -5.0, -2.4, 2.9, -91.5),
+    ("AAVE", "aave", 52, 3_900_000_000.0, 180_000_000.0, -1.2, -2.3, -9.8, -86.0),
+    ("DOT", "polkadot", 53, 3_800_000_000.0, 150_000_000.0, -2.4, -7.7, -7.1, -98.6),
+    ("ETC", "ethereum-classic", 66, 2_600_000_000.0, 90_000_000.0, 0.1, -3.2, -7.2, -96.1),
+    ("ATOM", "cosmos", 78, 1_900_000_000.0, 70_000_000.0, 2.6, 4.8, -8.8, -96.7),
+    ("ALGO", "algorand", 79, 1_850_000_000.0, 65_000_000.0, -2.0, -10.8, -3.6, -97.9),
+    ("FIL", "filecoin", 90, 1_500_000_000.0, 55_000_000.0, 1.7, -1.0, -8.1, -99.7),
+    ("XTZ", "tezos", 152, 620_000_000.0, 12_000_000.0, -1.4, -2.1, -14.5, -97.9),
+    ("CHZ", "chiliz", 211, 330_000_000.0, 9_000_000.0, -1.7, -1.4, -25.3, -98.5),
+]
+
+
+def universe_rows() -> List[Dict[str, Any]]:
+    """The fixture universe in the shape ``/coins/markets`` actually returns."""
+    return [
+        {
+            "id": gecko_id,
+            "symbol": symbol.lower(),
+            "name": gecko_id.replace("-", " ").title(),
+            "market_cap_rank": rank,
+            "market_cap": market_cap,
+            "total_volume": volume,
+            "price_change_percentage_24h_in_currency": change_24h,
+            "price_change_percentage_7d_in_currency": change_7d,
+            "price_change_percentage_30d_in_currency": change_30d,
+            "ath_change_percentage": ath_change,
+            "circulating_supply": None,
+        }
+        for (
+            symbol,
+            gecko_id,
+            rank,
+            market_cap,
+            volume,
+            change_24h,
+            change_7d,
+            change_30d,
+            ath_change,
+        ) in UNIVERSE
+    ]
 
 
 # ---------------------------------------------------------------------------

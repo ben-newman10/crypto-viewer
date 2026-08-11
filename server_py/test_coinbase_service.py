@@ -59,3 +59,24 @@ async def test_error_prices_scenario_returns_error_payload():
     service = FakeCoinbaseService(Scenario.parse(scenarios.ERROR_PRICES))
     result = await service.get_crypto_price("BTC-GBP")
     assert "error" in result
+
+
+async def test_list_products(coinbase_service):
+    """The fake must expose the catalogue the discovery path reads."""
+    bases = await coinbase_service.list_products("GBP")
+    assert isinstance(bases, list)
+    assert bases == sorted(bases), "callers rely on a stable order"
+    assert "BTC" in bases
+    # Coinbase really does list stablecoins in GBP; the screener excludes them
+    # rather than the catalogue hiding them.
+    assert "USDC" in bases
+
+
+async def test_list_products_for_an_unlisted_quote_currency_is_empty(coinbase_service):
+    assert await coinbase_service.list_products("JPY") == []
+
+
+async def test_list_products_degrades_to_empty_rather_than_raising():
+    """Mirrors the real service: an unreadable catalogue is not an error."""
+    service = FakeCoinbaseService(Scenario.parse(scenarios.ERROR_PORTFOLIO))
+    assert await service.list_products("GBP") == []

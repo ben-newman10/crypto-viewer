@@ -196,9 +196,17 @@ def screen(universe, tradeable: Set[str], held: Set[str],
 Hard filters in order, each rejection recorded and never silent: `already_held` →
 `not_tradeable` → `stablecoin` → `duplicate_exposure` → `below_rank_floor` → `thin_liquidity`.
 
-- **Stablecoins:** a curated `STABLECOIN_IDS` set **plus** the numeric guard
-  `abs(change_30d_pct) < 2.0`. Both — the curated list goes stale, the guard catches newcomers.
-  Never regex the symbol.
+- **Stablecoins: curated list only. The numeric guard was cut.** The plan called for
+  `abs(change_30d_pct) < 2.0` alongside the curated set, on the theory that a list goes stale
+  while a measurement does not. Checked against a live universe, that rule drops **DOGE**
+  (-0.9% over 30 days). Widening it to require flatness on 24h *and* 7d *and* 30d — which a
+  real peg satisfies — then drops **BTC**, which posted -0.5 / -0.8 / -0.4 on the day this was
+  measured. Price movement simply does not separate a pegged coin from a calm market, and
+  tightening the threshold only narrows the window in which the rule is catastrophically wrong.
+  A stale list fails safe: at worst a newly listed stablecoin gets assessed and reported as
+  going nowhere. A false positive silently deletes a major asset from every run. The upgrade
+  path, if this ever needs to be dynamic, is CoinGecko's `category=stablecoins` page — another
+  lookup, not a heuristic.
 - **Duplicate exposure:** a curated `WRAPPED_IDS` map (`wrapped-bitcoin → BTC`,
   `staked-ether → ETH`, `wrapped-steth → ETH`, …). Recommending WBTC to a BTC holder is not
   diversification, and excluding it under a named reason beats silently ranking it.
@@ -238,10 +246,29 @@ holdings-only behaviour**. Never guess at tradeability: suggesting a coin the us
 worse than suggesting nothing.
 
 **Tests:** new `test_discovery.py` — exclusion reasons, stratification, determinism, stablecoin
-/ wrapped / ambiguous handling, empty universe. Additions to `test_coinbase_service.py`.
+/ wrapped / ambiguous handling, empty universe. New `test_market_context_service.py` and
+`test_config.py`. Additions to `test_coinbase_service.py` and `test_coinbase_service_real.py`.
 
 **Risk:** the CoinGecko free tier rate-limits and a 250-row page is a heavier response. The
 15-minute cache and the never-raise contract contain it.
+
+### What the live APIs actually say
+
+Measured before building, and it moved several parameters:
+
+- **23 tradeable GBP pairs**, not hundreds. The screen is "18 down to 5", not "250 down to 5" —
+  the shortlist is a much larger slice of the pool than the plan assumed.
+- **Every tradeable base sits inside CoinGecko's top 250.** So `UNIVERSE_SIZE=250` covers the
+  listing completely and no coin is unreachable for want of a rank.
+- **`CANDIDATE_RANK_FLOOR` lowered 100 → 150.** At 100 it cut 5 of 18 survivors, which is heavy
+  pruning of an already small pool — and largely redundant, since being listed on Coinbase in
+  GBP is itself a quality filter. At 150 it excludes only the genuine tail (CHZ #211, SNX #228,
+  1INCH #232).
+- **`limit_only` is not a rejection.** The plan listed it among the untradeable flags; it means
+  "no market orders", not "closed", and excluding it would drop a buyable asset.
+- **Dynamic id resolution resolves 23/23 tickers**, against 15 in the static map — of which
+  only about ten are GBP-tradeable at all. SNX is the illustrative case: its CoinGecko id is
+  `havven`, which no amount of guessing from the ticker would produce.
 
 ---
 

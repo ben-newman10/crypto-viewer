@@ -52,6 +52,13 @@ class FakeCoinbaseService:
 
         return fixtures.price_for(product_id)
 
+    async def list_products(self, quote_currency: str = "GBP") -> List[str]:
+        if self.scenario.has(scenarios.ERROR_PORTFOLIO):
+            # The real listing never raises; an unreachable catalogue means
+            # "we do not know what is tradeable", which reads as no candidates.
+            return []
+        return sorted(fixtures.TRADEABLE_BASES.get(quote_currency.upper(), []))
+
     async def get_historical_data(self, product_id: str) -> List[Dict[str, Any]]:
         await self._maybe_delay(scenarios.SLOW_HISTORICAL)
 

@@ -8,7 +8,13 @@ sentiment signal categories -- without an outbound request to either host.
 
 from typing import Dict, List, Optional
 
-from ..market_context_service import AssetMarketStats, FearGreed
+from ..market_context_service import (
+    COINGECKO_IDS,
+    AssetMarketStats,
+    FearGreed,
+    UniverseRow,
+    _universe_row,
+)
 from . import fixtures, scenarios
 from .scenarios import Scenario
 
@@ -42,6 +48,32 @@ class FakeMarketContextService:
                 ath_change_pct=row["ath_change_pct"],
             )
         return stats
+
+    async def get_ranked_universe(
+        self,
+        quote_currency: str = "GBP",
+        limit: int = 250,
+    ) -> List[UniverseRow]:
+        if self.scenario.has(scenarios.ERROR_MARKET_CONTEXT):
+            return []
+        # Parsed through the real reader so the fixture is held to the same
+        # field names the live page uses -- a rename upstream breaks the fake
+        # too, rather than letting it drift into agreeing with nothing.
+        return [_universe_row(row) for row in fixtures.universe_rows()][:limit]
+
+    async def resolve_ids(
+        self,
+        symbols: List[str],
+        quote_currency: str = "GBP",
+    ) -> Dict[str, str]:
+        wanted = {symbol.upper() for symbol in symbols}
+        resolved = {
+            symbol: COINGECKO_IDS[symbol] for symbol in wanted if symbol in COINGECKO_IDS
+        }
+        for row in await self.get_ranked_universe(quote_currency):
+            if row.symbol in wanted and row.symbol not in resolved:
+                resolved[row.symbol] = row.gecko_id
+        return resolved
 
     async def get_fear_greed(self) -> Optional[FearGreed]:
         if self.scenario.has(scenarios.ERROR_MARKET_CONTEXT):
